@@ -1,9 +1,9 @@
 from sqlalchemy import *
 from sqlalchemy.ext.declarative import declarative_base
 import psycopg2
+import os
 
 Base = declarative_base()
-engine = create_engine("postgresql://admin:<insert password>@localhost/postgres")
 
 class Face(Base):
 	__tablename__ = 'face'
@@ -13,7 +13,7 @@ class Face(Base):
 	bbox_y1 = Column(Float)
 	bbox_y2 = Column(Float)
 	labeler_id = Column(Integer, ForeignKey('labeler.id'))
-	shot_id = Column(Integer, ForeignKey('shot.id'))
+	shot_id = Column(Integer)
 	background = Column(Boolean)
 	is_host = Column(Boolean)
 	blurriness = Column(Float)
@@ -62,15 +62,6 @@ class Labeler(Base):
 	created = Column(DateTime)
 	data_path = Column(String)
 
-class Shot(Base):
-	__tablename__ = 'shot'
-	id = Column(Integer, primary_key=True)
-	min_frame = Column(Integer)
-	max_frame = Column(Integer)
-	labeler_id = Column(Integer, ForeignKey('labeler.id'))
-	video_id = Column(Integer, ForeignKey('video.id'))
-	in_commercial = Column(Boolean)
-
 class Channel(Base):
 	__tablename__ = 'channel'
 	id = Column(Integer, primary_key=True)
@@ -90,10 +81,31 @@ class FrameSampler(Base):
 	name = Column(String)
 
 if __name__ == '__main__':
+	password = os.getenv("POSTGRES_PASSWORD")
+	engine = create_engine("postgresql://admin:{}@localhost/postgres".format(password))
+
+	conn = psycopg2.connect(dbname="postgres", user="admin", host='localhost', password=password)
+	cur = conn.cursor()
+	
+	# Drop the old tables so we can recreate the schema.
+	# This order must obey foreign key dependencies
+	tables = ['gender', 'canonical_show', 'show', 'channel', 'video', 'labeler', 'frame_sampler']
+	for table in tables:
+		print("Dropping", table)
+		cur.execute("DROP TABLE IF EXISTS public.{} CASCADE;".format(table));
+	conn.commit()
+	
 	# Create the tables
-	for clazz in [Face, Gender, CanonicalShow, Show, Video, Labeler, Shot, Channel, Frame, FrameSampler]:
+	for clazz in [Face, Gender, CanonicalShow, Show, Video, Labeler, Channel, Frame, FrameSampler]:
 		clazz.metadata.create_all(engine)
 
 	# Populate the tables with data
-	# COPY face(id,bbox_x1,bbox_x2,bbox_y1,bbox_y2,labeler_id,shot_id,background,is_host,blurriness,probability,frame_id)
-	# FROM '/newdisk/pg/query_face.csv' DELIMITER ',' CSV HEADER;
+	for table in tables:
+		print("loading", table)
+		fd = open("/newdisk/pg/query_{}.csv".format(table.replace("_", "")))
+		fd.readline() # Skip the headers
+		cur.copy_from(fd, table, sep=",", null="")
+		conn.commit()
+
+	cur.close()
+	conn.close()
