@@ -1,37 +1,46 @@
 import psycopg2
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, MetaData
 from schema import *
 import inspect
+import sys
 
-clsmembers = inspect.getmembers(sys.modules["schema"], inspect.isclass)
-print(clsmembers)
+tables = inspect.getmembers(sys.modules["schema"],
+	lambda member: inspect.isclass(member) and member.__module__ == "schema")
 
-# password = os.getenv("POSTGRES_PASSWORD")
-# engine = create_engine("postgresql://admin:{}@localhost/postgres".format(password))
+# These are really big and painful to reimport
+exclude = ['Face', 'Frame']
 
-# conn = psycopg2.connect(dbname="postgres", user="admin", host='localhost', password=password)
-# cur = conn.cursor()
+password = os.getenv("POSTGRES_PASSWORD")
+engine = create_engine("postgresql://admin:{}@localhost/postgres".format(password))
 
-# # Drop the old tables so we can recreate the schema.
-# # This order must obey foreign key dependencies
-# tables = ['gender', 'canonical_show', 'show', 'channel', 'video', 'labeler', 'frame_sampler', 'identity', 'face_identity', 'show_hosts']
-# for table in tables:
-# 	print("Dropping", table)
-# 	cur.execute("DROP TABLE IF EXISTS public.{} CASCADE;".format(table));
-# conn.commit()
+conn = psycopg2.connect(dbname="postgres", user="admin", host='localhost', password=password)
+cur = conn.cursor()
 
-# # Create the tables
-# for clazz in [Face, Gender, CanonicalShow, Show, Video, Labeler, Channel, Frame, FrameSampler, Identity, FaceIdentity, ShowHosts]:
-# 	clazz.metadata.create_all(engine)
+# Drop the old tables so we can recreate the schema.
+# MetaData().drop_all(engine)
+for class_name, table in tables:
+	# These are really big and painful to reimport
+	if class_name in exclude:
+		continue
+	print("Dropping", table)
+	cur.execute("DROP TABLE IF EXISTS public.{} CASCADE;".format(table.__tablename__));
+conn.commit()
 
-# # Populate the tables with data
-# for table in tables:
-# 	print("loading", table)
-# 	fd = open("/newdisk/pg/query_{}.csv".format(table.replace("_", "")))
-# 	fd.readline() # Skip the headers
-# 	cur.copy_from(fd, table, sep=",", null="")
-# 	conn.commit()
+# Create the tables. The metadata object of a single table is aware of all
+# tables, and knows the order in which to create them.
+tables[0][1].metadata.create_all(engine)
 
-# cur.close()
-# conn.close()
+# Populate the tables with data
+for class_name, table in tables:
+	if class_name in exclude:
+		continue
+	table_name = table.__tablename__
+	print("Loading", table_name)
+	fd = open("/newdisk/pg/query_{}.csv".format(table_name))
+	fd.readline() # Skip the headers
+	cur.copy_from(fd, table_name, sep=",", null="")
+	conn.commit()
+
+cur.close()
+conn.close()
