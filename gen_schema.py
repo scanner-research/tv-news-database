@@ -68,5 +68,3 @@ for path in glob.glob("/newdisk/pg/query_*.csv"):
 			print("\t{} = Column({})".format(h, get_type(h, d)))
 	print()
 print()
-print("tables = [{}]".format(tables.join(", ")))
-print()
