@@ -1,7 +1,5 @@
 from sqlalchemy import *
 from sqlalchemy.ext.declarative import declarative_base
-import psycopg2
-import os
 
 Base = declarative_base()
 
@@ -80,32 +78,21 @@ class FrameSampler(Base):
 	id = Column(Integer, primary_key=True)
 	name = Column(String)
 
-if __name__ == '__main__':
-	password = os.getenv("POSTGRES_PASSWORD")
-	engine = create_engine("postgresql://admin:{}@localhost/postgres".format(password))
+class Identity(Base):
+	__tablename__ = 'identity'
+	id = Column(Integer, primary_key=True)
+	name = Column(String)
 
-	conn = psycopg2.connect(dbname="postgres", user="admin", host='localhost', password=password)
-	cur = conn.cursor()
-	
-	# Drop the old tables so we can recreate the schema.
-	# This order must obey foreign key dependencies
-	tables = ['gender', 'canonical_show', 'show', 'channel', 'video', 'labeler', 'frame_sampler']
-	for table in tables:
-		print("Dropping", table)
-		cur.execute("DROP TABLE IF EXISTS public.{} CASCADE;".format(table));
-	conn.commit()
-	
-	# Create the tables
-	for clazz in [Face, Gender, CanonicalShow, Show, Video, Labeler, Channel, Frame, FrameSampler]:
-		clazz.metadata.create_all(engine)
+class FaceIdentity(Base):
+	__tablename__ = 'face_identity'
+	id = Column(Integer, primary_key=True)
+	face_id = Column(Integer, ForeignKey('face.id'))
+	labeler_id = Column(Integer, ForeignKey('labeler.id'))
+	probability = Column(Float)
+	identity_id = Column(Integer, ForeignKey('identity.id'))
 
-	# Populate the tables with data
-	for table in tables:
-		print("loading", table)
-		fd = open("/newdisk/pg/query_{}.csv".format(table.replace("_", "")))
-		fd.readline() # Skip the headers
-		cur.copy_from(fd, table, sep=",", null="")
-		conn.commit()
-
-	cur.close()
-	conn.close()
+class ShowHosts(Base):
+	__tablename__ = 'show_hosts'
+	id = Column(Integer, primary_key=True)
+	show_id = Column(Integer, ForeignKey('show.id'))
+	identity_id = Column(Integer, ForeignKey('identity.id'))
