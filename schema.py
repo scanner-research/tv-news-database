@@ -8,18 +8,18 @@ class CanonicalShow(Base):
 	id = Column(Integer, primary_key=True)
 	name = Column(String)
 	is_recurring = Column(Boolean)
-	channel = Column(String) # some one-off videos like debates/speeches have the same name on all channels
+	channel_id = Column(Integer, ForeignKey('channel.id'))
 
-	UniqueConstraint('unique_name_channel', name, channel)
+	UniqueConstraint('unique_name_channel', name, channel_id)
 
 class Show(Base):
 	__tablename__ = 'show'
 	id = Column(Integer, primary_key=True)
 	name = Column(String)
 	canonical_show_id = Column(Integer, ForeignKey('canonical_show.id'))
-	channel = Column(String) # some one-off videos like debates/speeches have the same name on all channels
+	channel_id = Column(Integer, ForeignKey('channel.id'))
 	
-	UniqueConstraint('unique_name_channel', name, channel)
+	UniqueConstraint('unique_name_channel', name, channel_id)
 
 class Channel(Base):
 	__tablename__ = 'channel'
@@ -30,17 +30,14 @@ class Video(Base):
 	__tablename__ = 'video'
 	id = Column(Integer, primary_key=True)
 	name = Column(String, unique=True)
-	# TODO Make it so that it is only the file name component without .mp4
-	# video_path.split('/')[-1].split('.mp4')[0]
 	num_frames = Column(Integer)
 	fps = Column(Float)
 	width = Column(Integer)
 	height = Column(Integer)
 	time = Column(DateTime)
-	channel_id = Column(Integer, ForeignKey('channel.id'))
 	show_id = Column(Integer, ForeignKey('show.id'))
 	is_duplicate = Column(Boolean)
-	is_corrupted = Column(Boolean)
+	is_corrupt = Column(Boolean)
 
 class FrameSampler(Base):
 	__tablename__ = 'frame_sampler'
@@ -108,5 +105,5 @@ class Commercial(Base):
 class HostsAndStaff(Base):
 	__tablename__ = 'hosts_and_staff'
 	channel_id = Column(Integer, ForeignKey('channel.id'), primary_key=True)
-	canonical_show_id = Column(Integer, ForeignKey('canonial_show.id'), primary_key=True)
+	canonical_show_id = Column(Integer, ForeignKey('canonical_show.id'), primary_key=True)
 	identity_id = Column(Integer, ForeignKey('identity.id'), primary_key=True)
