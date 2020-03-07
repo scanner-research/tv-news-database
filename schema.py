@@ -56,6 +56,7 @@ class Labeler(Base):
 	id = Column(Integer, primary_key=True)
 	name = Column(String, unique=True)
 	created = Column(DateTime)
+	is_handlabel = Column(Boolean)
 	comments = Column(String)
 
 class Face(Base):
