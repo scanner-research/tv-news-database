@@ -39,8 +39,8 @@ class Video(Base):
 	time = Column(DateTime)
 	channel_id = Column(Integer, ForeignKey('channel.id'))
 	show_id = Column(Integer, ForeignKey('show.id'))
-	duplicate = Column(Boolean)
-	corrupted = Column(Boolean)
+	is_duplicate = Column(Boolean)
+	is_corrupted = Column(Boolean)
 
 class FrameSampler(Base):
 	__tablename__ = 'frame_sampler'
