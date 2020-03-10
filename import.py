@@ -6,6 +6,7 @@ import schema
 import sqlalchemy
 import psycopg2
 import tqdm
+from functools import lru_cache
 
 
 def parse_video_name(name: str):
@@ -27,6 +28,7 @@ def parse_video_name(name: str):
     timestamp = datetime.strptime(ymd + hms, '%Y%m%d%H%M%S')
     return channel, show, timestamp
 
+@lru_cache(1024 * 16)
 def get_or_create(model, **kwargs):
     instance = session.query(model).filter_by(**kwargs).first()
     if instance:
@@ -82,8 +84,8 @@ def load_videos(video_csv, show_to_canonical_show_csv):
                 canonical_show_id=canonical_show_object.id)
 
             # create the Video
-            session.add(schema.Video(name=name, num_frames=num_frames, fps=fps,
-                width=width, height=height, time=timestamp,
+            session.add(schema.Video(id=vid, name=name, num_frames=num_frames,
+            	fps=fps, width=width, height=height, time=timestamp,
                 show_id=show_object.id, is_duplicate=is_duplicate, is_corrupt=is_corrupt))
 
     session.commit()
@@ -106,16 +108,16 @@ def load_hosts_staff(host_staff_csv):
                 channel_id = conn.execute(s).fetchone()['id']
 
                 # create new host_staff_row
-                session.add(schema.HostsAndStaff(identity_id=identity_id,
+                session.add(schema.ChannelHosts(identity_id=identity_id,
                     channel_id=channel_id))
             
             if canonical_show_name != '':
                 s = sqlalchemy.select([schema.CanonicalShow]).where(
-                    schema.CanonialShow.name == canonical_show_name)
+                    schema.CanonicalShow.name == canonical_show_name)
                 canonical_show_id = conn.execute(s).fetchone()['id']
                 
                 # create new host_staff_row
-                session.add(schema.HostsAndStaff(identity_id=identity_id,
+                session.add(schema.CanonicalShowHosts(identity_id=identity_id,
                     canonical_show_id=canonical_show_id))
 
     session.commit()
@@ -126,6 +128,7 @@ def load_via_copy(import_path, table):
         headers = fp.readline() # Skip the headers
         print("Importing {} with columns ({})".format(table, headers[:-1]))
 
+        # TODO disable triggers for constraints
         cur.copy_expert("copy {}({}) from stdin (format csv)".format(table, headers), fp)
         conn.commit()
 
@@ -136,7 +139,7 @@ if __name__ == '__main__':
     conn = psycopg2.connect(dbname="tvnews", user="admin", host='localhost', password=password)
     cur = conn.cursor()
 
-    schema.Face.metadata.drop_all(engine)
+    # schema.Face.metadata.drop_all(engine)
     schema.Face.metadata.create_all(engine)
 
     Session = sqlalchemy.orm.sessionmaker(bind=engine)

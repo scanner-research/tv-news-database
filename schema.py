@@ -91,8 +91,8 @@ class Gender(Base):
 class FaceGender(Base):
 	__tablename__ = 'face_gender'
 	face_id = Column(Integer, ForeignKey('face.id'), primary_key=True)
-	gender_id = Column(Integer, ForeignKey('gender.id'), primary_key=True)
-	labeler_id = Column(Integer, ForeignKey('labeler.id'))
+	gender_id = Column(Integer, ForeignKey('gender.id'))
+	labeler_id = Column(Integer, ForeignKey('labeler.id'), primary_key=True)
 	score = Column(Float)
 
 class Commercial(Base):
@@ -103,8 +103,12 @@ class Commercial(Base):
 	min_frame = Column(Integer)
 	video_id = Column(Integer, ForeignKey('video.id'))
 
-class HostsAndStaff(Base):
-	__tablename__ = 'hosts_and_staff'
+class ChannelHosts(Base):
+	__tablename__ = 'channel_host'
 	channel_id = Column(Integer, ForeignKey('channel.id'), primary_key=True)
+	identity_id = Column(Integer, ForeignKey('identity.id'), primary_key=True)
+
+class CanonicalShowHosts(Base):
+	__tablename__ = 'canonical_show_host'
 	canonical_show_id = Column(Integer, ForeignKey('canonical_show.id'), primary_key=True)
 	identity_id = Column(Integer, ForeignKey('identity.id'), primary_key=True)
