@@ -1,7 +1,7 @@
 COPY (
 
--- Get the most confident identity for each face (90 seconds)
 WITH identities AS (
+	-- Get the most confident identity for each face (10 minutes)
 	SELECT face_identity.identity_id, face_identity.score, face_identity.face_id
 	FROM face_identity
 	INNER JOIN (
@@ -55,7 +55,7 @@ WITH identities AS (
 SELECT
 	face.id as face_id,
 	frame.video_id,
-	frame.number AS frame_number,
+	frame.number * (1000.0 / video.fps) AS start_ms,
 	(face.bbox_y2 - face.bbox_y1) AS height,
 	genders.gender_id,
 	genders.score AS gender_score,
@@ -66,7 +66,8 @@ FROM face
 LEFT JOIN identities ON identities.face_id = face.id
 LEFT JOIN genders ON genders.face_id = face.id
 LEFT JOIN hosts ON hosts.identity_id = identities.identity_id
-LEFT JOIN frame on face.frame_id = frame.id
+LEFT JOIN frame ON face.frame_id = frame.id
+LEFT JOIN video ON frame.video_id = video.id
 ORDER BY
 	frame.video_id,
 	identities.identity_id,

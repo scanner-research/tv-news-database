@@ -1,3 +1,9 @@
+"""
+This script opens a very large number of file descriptors (40k or so), so it may require
+you to raise the system and/or per process limit. You can edit /etc/security/limits.conf
+to change the per process limit.
+"""
+
 import psycopg2
 import time
 import tqdm
@@ -5,6 +11,7 @@ from typing import List, Tuple
 import os
 from schema import Identity, Gender
 import sqlalchemy
+from collections import defaultdict
 
 # Adapted from https://github.com/scanner-research/rs-intervalset/blob/master/rs_intervalset/writer.py
 class IntervalListMappingWriter(object):
@@ -41,7 +48,6 @@ class IntervalListMappingWriter(object):
             self._fp.close()
             self._fp = None
 
-
 def encode_payload(is_male, is_nonbinary, is_host, height):
     ret = 0
     if is_male:
@@ -53,13 +59,21 @@ def encode_payload(is_male, is_nonbinary, is_host, height):
     ret |= height << 3
     return ret
 
-
-def round_height(height):
-    return min(round(height * 31), 31)  # 5-bits
+# Given a cursor in a database, get all identity ids with at least 10 minutes
+# of screentime. Takes about 30 seconds.
+def get_selected_identities(cur):
+	cur.execute("""
+		SELECT face_identity.identity_id
+		FROM face_identity
+		GROUP BY identity_id
+		HAVING COUNT(*) > 200 -- at a sampling rate of once every 3 seconds, this is 10 minutes
+	""")
+	results = cur.fetchall()
+	return [r[0] for r in results]
 
 sql = """
--- Get the most confident identity for each face (90 seconds)
 WITH identities AS (
+	-- Get the most confident identity for each face (10 minutes)
 	SELECT face_identity.identity_id, face_identity.score, face_identity.face_id
 	FROM face_identity
 	INNER JOIN (
@@ -113,7 +127,7 @@ WITH identities AS (
 SELECT
 	face.id as face_id,
 	frame.video_id,
-	frame.number AS frame_number,
+	frame.number * (1000.0 / video.fps) AS start_ms,
 	(face.bbox_y2 - face.bbox_y1) AS height,
 	genders.gender_id,
 	genders.score AS gender_score,
@@ -124,7 +138,8 @@ FROM face
 LEFT JOIN identities ON identities.face_id = face.id
 LEFT JOIN genders ON genders.face_id = face.id
 LEFT JOIN hosts ON hosts.identity_id = identities.identity_id
-LEFT JOIN frame on face.frame_id = frame.id
+LEFT JOIN frame ON face.frame_id = frame.id
+LEFT JOIN video ON frame.video_id = video.id
 ORDER BY
 	frame.video_id,
 	identities.identity_id,
@@ -135,81 +150,92 @@ ORDER BY
 start_time = time.time()
 password = os.getenv("POSTGRES_PASSWORD")
 conn = psycopg2.connect(dbname="tvnews", user="admin", host='localhost', password=password)
-cur = conn.cursor()
+# By default, psychopg2 loads the entire dataset in memory. Specifying a name
+# for the cursor makes it a server side cursor, which fetches data in chunks.
+cur = conn.cursor(name="server_side_cursor")
 
 engine = sqlalchemy.create_engine("postgresql://admin:{}@localhost/tvnews".format(password))
 Session = sqlalchemy.orm.sessionmaker(bind=engine)
 session = Session()
 
-IDENTITY_INTERVAL_DIR = '/newdisk/intervals'
+WIDGET_DATA_DIR = '/newdisk/widget-data'
+if not os.path.exists(WIDGET_DATA_DIR):
+    os.makedirs(WIDGET_DATA_DIR)
+IDENTITY_INTERVAL_DIR = os.path.join(WIDGET_DATA_DIR, 'aws-smoothed-identity')
 if not os.path.exists(IDENTITY_INTERVAL_DIR):
     os.makedirs(IDENTITY_INTERVAL_DIR)
 
-identity_ilist_writers = {}
-identities = session.query(Identity).all()
-identity_id_to_name = {i.id : i.name.lower() for i in identities}
+
+
+selected_identities = get_selected_identities(cur)
+print("Number of selected identities", len(selected_identities))
+
+identity_ilist_writers = {i.id : IntervalListMappingWriter(
+		os.path.join(IDENTITY_INTERVAL_DIR, '{}.ilist.bin'.format(i.name.lower())), 1
+	)}
 
 def flush_identity_accumulators(video_id, ilist_accumulators):
     for identity_id, face_ilist in ilist_accumulators.items():
-        if face_ilist:
-            if identity_id not in identity_ilist_writers:
-                identity_ilist_writers[identity_id] = IntervalListMappingWriter(
-                    os.path.join(
-                        IDENTITY_INTERVAL_DIR, 
-                        '{}.ilist.bin'.format(identity_id_to_name[identity_id])
-                    ), 1)
-            identity_ilist_writers[identity_id].write(video_id, face_ilist)
+        identity_ilist_writers[identity_id].write(video_id, face_ilist)
 
 MALE_GENDER_ID = session.query(Gender).filter_by(name='M').first().id 
 NONBINARY_GENDER_ID = session.query(Gender).filter_by(name='U').first().id 
-SAMPLE_LENGTH = 3000
-n_videos_done = 0
+SAMPLE_LENGTH = 3000 # TODO fetch this from the labeler
 curr_video_id = None
 curr_ident_id = None
 
 print("Starting query")
-cur.execute(sql)
-print("Time to first row: {:.3f} seconds".format(time.time() - start_time))
+# cur.execute(sql)
+# print("Time to first row: {:.3f} seconds".format(time.time() - start_time))
 
-for row in tqdm.tqdm(cur):
+import csv
 
-    face_id, video_id, frame_number, height, gender_id, gender_score, identity_id, identity_score, is_host = row
-    
-    if video_id != curr_video_id:
-        if curr_video_id is not None:
-            n_videos_done += 1
-            if n_videos_done % 1000 == 0:
-                print('Processed {} videos in {:.3f} seconds'.format(n_videos_done, time.time() - start_time))
-            flush_identity_accumulators(curr_video_id, curr_ilist_accumulators)
-                    
-        curr_video_id = video_id
-        curr_ilist_accumulators = defaultdict(list)
-        
-    # TODO: remove this once we know the print doesn't trigger and there are no
-    # duplicates
-    if curr_ident_id is None or curr_ident_id != identity_id:
-        curr_face_id = None
-    curr_ident_id = identity_id
-    if curr_face_id == face_id:
-        print("Duplicate face id")
-        continue
-    curr_face_id = face_id
-    start_ms = frame_number * SAMPLE_LENGTH
-    end_ms = start_ms + SAMPLE_LENGTH
-    curr_ilist_accumulators[identity_id].append(
-        (start_ms, end_ms, 
-         encode_payload(
-             fgender_id == MALE_GENDER_ID, 
-             fgender_id == NONBINARY_GENDER_ID, 
-             is_host,
-             round_height(fheight)
-         ))
-    )
-    
-if curr_video_id is not None:
-    flush_identity_accumulators(curr_video_id, curr_ilist_accumulators)
-            
-for iw in identity_ilist_writers.values():
-    iw.close()
+with open("/newdisk/result.csv") as fp:
+    fp.readline() # Skip headers
+    reader = csv.reader(fp)
 
-print("Total time to export: {:3f} seconds".format(time.time() - start_time))
+    with IntervalListMappingWriter(os.path.join(WIDGET_DATA_DIR, 'faces.ilist.bin'), 1) as all_faces_writer:
+
+	    for row in tqdm.tqdm(reader):
+	        face_id, video_id, frame_number, height, gender_id, gender_score, identity_id, identity_score, is_host = row
+	        face_id = int(face_id)
+	        video_id = int(video_id)
+	        start_ms = int(start_ms)
+	        height = float(height)
+	        gender_id = int(gender_id) if len(gender_id) > 0 else None
+	        if len(identity_id) == 0:
+	            continue
+	        identity_id = int(identity_id) if len(identity_id) > 0 else None
+	        identity_score = float(identity_score) if len(identity_score) > 0 else None
+	        is_host = is_host == "t"
+	        
+	        if video_id != curr_video_id:
+	            if curr_video_id is not None:
+	                flush_identity_accumulators(curr_video_id, curr_ilist_accumulators)
+
+	                if curr_video_faces:
+	                	all_faces_writer.write(curr_video_id, curr_video_faces)
+	                        
+	            curr_video_id = video_id
+	            curr_ilist_accumulators = defaultdict(list)
+	            curr_video_faces = []
+	            
+	        end_ms = start_ms + SAMPLE_LENGTH
+	        interval_entry = (start_ms, end_ms, 
+		         encode_payload(
+		             gender_id == MALE_GENDER_ID, 
+		             gender_id == NONBINARY_GENDER_ID, 
+		             is_host,
+		             min(round(height * 31), 31)  # 5-bits
+		         ))
+	        if identity_id in selected_identities:
+	        	curr_ilist_accumulators[identity_id].append(interval_entry)
+	        curr_video_faces.append(interval_entry)
+	        
+	    if curr_video_id is not None:
+	        flush_identity_accumulators(curr_video_id, curr_ilist_accumulators)
+	                
+	    for iw in identity_ilist_writers.values():
+	        iw.close()
+
+	    print("Total time to export: {:3f} seconds".format(time.time() - start_time))
