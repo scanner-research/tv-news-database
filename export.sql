@@ -1,38 +1,76 @@
--- I think the algorithm if expressed as sql on a per video basis is:
--- 1) select face-genders by distinct face_id (use precedence, nonbinary first then knn-gender)
--- 2) left outer join with face-identities
--- 3) select distinct again by face_id, taking rows with largest score on face-identity (also, not dropping any of the null ones)
--- 4) annotate with a host bit for all hosts of that video (channel hosts + show hosts)
--- 5) join with faces
-
 COPY (
 
 -- Get the most confident identity for each face (90 seconds)
 WITH identities AS (
-	SELECT face_identity.*
+	SELECT face_identity.identity_id, face_identity.score, face_identity.face_id
 	FROM face_identity
-	RIGHT JOIN (SELECT face_id, MAX(score) AS max_score FROM face_identity GROUP BY face_id) AS t
-	ON face_identity.face_id = t.face_id AND face_identity.score = t.max_score),
+	INNER JOIN (
+		SELECT face_id, MAX(score) AS max_score
+		FROM face_identity
+		WHERE labeler_id = 609 or labeler_id = 610 -- Only rekognition
+		GROUP BY face_id
+	) AS t
+	ON face_identity.face_id = t.face_id AND face_identity.score = t.max_score
+	WHERE labeler_id = 609 or labeler_id = 610 -- Only rekognition
+	),
 
 
--- Get the gender for each face, taking nonbinary (3) if it exists (7 minutes)
+-- Get the gender for each face, with manual relabeling taking precedence (5 minutes)
 	genders AS (
-	SELECT face_id, MAX(gender_id) AS gender_id
-	FROM face_gender
-	GROUP BY face_id),
+	SELECT 
+		CASE WHEN manual_gender.face_id IS NULL
+			THEN knn_gender.face_id
+			ELSE manual_gender.face_id
+		END AS face_id,
+		CASE WHEN manual_gender.face_id IS NULL
+			THEN knn_gender.gender_id
+			ELSE manual_gender.gender_id
+		END AS gender_id,
+		CASE WHEN manual_gender.face_id IS NULL
+			THEN knn_gender.score
+			ELSE manual_gender.score
+		END AS score
+	FROM (
+		SELECT face_id, gender_id, score
+		FROM face_gender
+		WHERE labeler_id = 1 -- manual assignment (nonbinary override)
+	) manual_gender
+	FULL OUTER JOIN (
+		SELECT face_id, gender_id, score
+		FROM face_gender
+		WHERE labeler_id = 551 -- KNN-gender
+	) AS knn_gender
+	ON manual_gender.face_id = knn_gender.face_id
+	),
 
--- Get all hosts (3 milliseconds)
+-- Get all unique hosts (3 milliseconds)
 	hosts AS (
+	SELECT DISTINCT identity_id FROM (
 		SELECT identity_id FROM channel_host
 		UNION ALL 
-		SELECT identity_id FROM canonical_show_host
+		SELECT identity_id FROM canonical_show_host) t
 	)
 
--- Join face with gender and identity
-SELECT face.*, genders.gender_id, identities.*, hosts.identity_id IS NOT NULL AS is_host
+-- Join face with gender, identity, hosts, and frames (45 minutes)
+SELECT
+	face.id as face_id,
+	frame.video_id,
+	frame.number AS frame_number,
+	(face.bbox_y2 - face.bbox_y1) AS height,
+	genders.gender_id,
+	genders.score AS gender_score,
+	identities.identity_id,
+	identities.score as identity_score,
+	hosts.identity_id IS NOT NULL AS is_host
 FROM face
 LEFT JOIN identities ON identities.face_id = face.id
 LEFT JOIN genders ON genders.face_id = face.id
 LEFT JOIN hosts ON hosts.identity_id = identities.identity_id
+LEFT JOIN frame on face.frame_id = frame.id
+ORDER BY
+	frame.video_id,
+	identities.identity_id,
+	frame.number,
+	face.id
 
-) TO '/newdisk/result.csv';
+) TO '/newdisk/result.csv' HEADER CSV;
