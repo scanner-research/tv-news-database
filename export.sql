@@ -68,6 +68,7 @@ LEFT JOIN genders ON genders.face_id = face.id
 LEFT JOIN hosts ON hosts.identity_id = identities.identity_id
 LEFT JOIN frame ON face.frame_id = frame.id
 LEFT JOIN video ON frame.video_id = video.id
+WHERE NOT video.is_corrupt AND NOT video.is_duplicate
 ORDER BY
 	frame.video_id,
 	identities.identity_id,

@@ -36,6 +36,8 @@ def get_or_create(model, **kwargs):
     else:
         instance = model(**kwargs)
         session.add(instance)
+        # This flush is necessary in order to populate the primary key
+        session.flush()
         return instance
 
 def load_videos(video_csv, show_to_canonical_show_csv):
@@ -139,7 +141,6 @@ if __name__ == '__main__':
     conn = psycopg2.connect(dbname="tvnews", user="admin", host='localhost', password=password)
     cur = conn.cursor()
 
-    # schema.Face.metadata.drop_all(engine)
     schema.Face.metadata.create_all(engine)
 
     Session = sqlalchemy.orm.sessionmaker(bind=engine)

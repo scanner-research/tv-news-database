@@ -1,7 +1,17 @@
 """
+This script exports data from the postgres source of truth database in a format
+the tv-news-viewer can use. This includes the following files:
+
+videos.json
+faces.ilist.bin
+commercials.iset.bin
+people/<each identity with substantial screen time>.ilist.bin
+
 This script opens a very large number of file descriptors (40k or so), so it may require
 you to raise the system and/or per process limit. You can edit /etc/security/limits.conf
 to change the per process limit.
+
+It runs in approximately 2 hours.
 """
 
 import psycopg2
@@ -10,6 +20,7 @@ import tqdm
 from typing import List, Tuple
 import os
 from collections import defaultdict
+import json
 
 # Adapted from https://github.com/scanner-research/rs-intervalset/blob/master/rs_intervalset/writer.py
 class IntervalListMappingWriter(object):
@@ -131,6 +142,8 @@ def export_commercials(conn):
             buffered_tuples.append((int(start_ms), int(end_ms)))
     print("Finished commercial export in {:.3f} seconds".format(time.time() - start_time))
 
+# Join faces against just about every other table, and return a cursor for the
+# results. I takes about 90 minutes total.
 def get_identities_from_db(conn):
     sql = """
     WITH identities AS (
@@ -187,7 +200,7 @@ def get_identities_from_db(conn):
     SELECT
         face.id as face_id,
         frame.video_id,
-        frame.number * (1000.0 / video.fps) AS start_ms,
+        CAST(frame.number * (1000.0 / video.fps) AS INTEGER) AS start_ms,
         (face.bbox_y2 - face.bbox_y1) AS height,
         genders.gender_id,
         genders.score AS gender_score,
@@ -200,6 +213,7 @@ def get_identities_from_db(conn):
     LEFT JOIN hosts ON hosts.identity_id = identities.identity_id
     LEFT JOIN frame ON face.frame_id = frame.id
     LEFT JOIN video ON frame.video_id = video.id
+    WHERE NOT video.is_corrupt AND NOT video.is_duplicate
     ORDER BY
         frame.video_id,
         identities.identity_id,
@@ -227,7 +241,7 @@ def get_identities_from_file(path):
             face_id, video_id, start_ms, height, gender_id, gender_score, identity_id, identity_score, is_host = row
             face_id = int(face_id)
             video_id = int(video_id)
-            start_ms = int(start_ms)
+            start_ms = int(float(start_ms))
             height = float(height)
             gender_id = int(gender_id) if len(gender_id) > 0 else None
             if len(identity_id) == 0:
@@ -238,7 +252,7 @@ def get_identities_from_file(path):
             yield (face_id, video_id, start_ms, height, gender_id, gender_score, identity_id, identity_score, is_host)
 
 def export_identities(conn):
-    IDENTITY_INTERVAL_DIR = os.path.join(WIDGET_DATA_DIR, 'aws-smoothed-identity')
+    IDENTITY_INTERVAL_DIR = os.path.join(WIDGET_DATA_DIR, 'people')
     if not os.path.exists(IDENTITY_INTERVAL_DIR):
         os.makedirs(IDENTITY_INTERVAL_DIR)
 
@@ -265,10 +279,9 @@ def export_identities(conn):
     curr_ident_id = None
 
     with IntervalListMappingWriter(os.path.join(WIDGET_DATA_DIR, 'faces.ilist.bin'), 1) as all_faces_writer:
-        face_iterator = get_identities_from_db(conn) # file("/newdisk/result.csv.old")
+        face_iterator = get_identities_from_db(conn) # file("/newdisk/result.csv")
         # Provide an estimate of the total number of rows so we get a nice progress bar
         for row in tqdm.tqdm(face_iterator, total=306055184):
-            print(row)
             face_id, video_id, start_ms, height, gender_id, gender_score, identity_id, identity_score, is_host = row
             
             if video_id != curr_video_id:
@@ -300,6 +313,36 @@ def export_identities(conn):
         for iw in identity_ilist_writers.values():
             iw.close()
 
+def export_videos(conn):
+    start_time = time.time()
+    VIDEO_FILE = os.path.join(WIDGET_DATA_DIR, 'videos.json')
+
+    # By default, psychopg2 loads the entire dataset in memory. Specifying a name
+    # for the cursor makes it a server side cursor, which fetches data in chunks.
+    cur = conn.cursor(name="video_cursor")
+    # This query should run in about 6 seconds
+    print("Starting video export")
+    cur.execute("""
+        SELECT
+            video.id,
+            SPLIT_PART(video.name, '.mp4', 1),
+            canonical_show.name,
+            channel.name,
+            num_frames,
+            fps,
+            width,
+            height
+        FROM video
+        LEFT JOIN show ON video.show_id = show.id
+        LEFT JOIN canonical_show ON show.canonical_show_id = canonical_show.id
+        LEFT JOIN channel ON channel.id=show.channel_id
+    """)
+                      
+    with open(VIDEO_FILE, 'w') as f:
+        json.dump(cur.fetchall(), f)
+    
+    print("Finished video export in {:.3f} seconds".format(time.time() - start_time))
+
 if __name__ == '__main__':
     start_time = time.time()
     password = os.getenv("POSTGRES_PASSWORD")
@@ -309,6 +352,7 @@ if __name__ == '__main__':
     if not os.path.exists(WIDGET_DATA_DIR):
         os.makedirs(WIDGET_DATA_DIR)
 
+    export_videos(conn)
     export_commercials(conn)
     export_identities(conn)
 
