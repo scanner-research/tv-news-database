@@ -127,7 +127,7 @@ def export_commercials(conn):
         FROM commercial
         LEFT JOIN video ON commercial.video_id = video.id
         WHERE commercial.labeler_id=9 AND NOT is_corrupt AND NOT is_duplicate
-        ORDER BY video_id
+        ORDER BY video_id, start_ms
     """)
 
     with IntervalSetMappingWriter(COMMERCIAL_INTERVAL_FILE) as interval_writer:
@@ -140,6 +140,9 @@ def export_commercials(conn):
                 cur_video_id = video_id
                 buffered_tuples = []
             buffered_tuples.append((int(start_ms), int(end_ms)))
+        
+        if len(buffered_tuples) > 0:
+            interval_writer.write(cur_video_id, buffered_tuples)
     print("Finished commercial export in {:.3f} seconds".format(time.time() - start_time))
 
 # Join faces against just about every other table, and return a cursor for the
