@@ -216,8 +216,8 @@ def get_identities_from_db(conn):
     WHERE NOT video.is_corrupt AND NOT video.is_duplicate
     ORDER BY
         frame.video_id,
-        identities.identity_id,
         frame.number,
+        identities.identity_id,
         face.id
     """
 
@@ -336,6 +336,7 @@ def export_videos(conn):
         LEFT JOIN show ON video.show_id = show.id
         LEFT JOIN canonical_show ON show.canonical_show_id = canonical_show.id
         LEFT JOIN channel ON channel.id=show.channel_id
+        WHERE NOT video.is_corrupt AND NOT video.is_duplicate
     """)
                       
     with open(VIDEO_FILE, 'w') as f:
