@@ -11,7 +11,7 @@ import numpy as np
 from typing import Dict, NamedTuple
 
 import schema
-from util import get_or_create, parse_video_name
+from util import get_db_session, get_or_create, parse_video_name
 
 
 EMBEDDING_DIM = 128
@@ -59,31 +59,31 @@ def get_import_context(
 ):
     frame_sampler_object = session.query(schema.FrameSampler).filter_by(
         name='1s'
-    ).first()
+    ).one()
 
     commercial_labeler_object = session.query(schema.Labeler).filter_by(
         name='haotian-commercial'
-    ).first()
+    ).one()
 
     gender_labeler_object = session.query(schema.Labeler).filter_by(
         name='knn-gender'
-    ).first()
+    ).one()
     face_labeler_object = session.query(schema.Labeler).filter_by(
         name='MTCNN'
-    ).first()
+    ).one()
     aws_identity_labeler_object = session.query(schema.Labeler).filter_by(
         name='face-identity-rekognition'
-    ).first()
+    ).one()
     aws_prop_identity_labeler_object = session.query(schema.Labeler).filter_by(
         name='face-identity-rekognition:l2-dist-thresh=0.7'
-    ).first()
+    ).one()
 
     male_gender_object = session.query(schema.Gender).filter_by(
         name='M'
-    ).first()
+    ).one()
     female_gender_object = session.query(schema.Gender).filter_by(
         name='F'
-    ).first()
+    ).one()
 
     return ImportContext(
         import_path=import_path,
@@ -272,7 +272,7 @@ def save_captions(import_context, video_name):
 def get_or_create_show(session, channel: str, show: str):
     channel_object = session.query(schema.Channel).filter_by(
         channel=channel
-    ).first()
+    ).one()
     assert channel_object, 'Unknown channel: {}'.format(channel)
 
     show_object = session.query(schema.Show).filter_by(
@@ -337,11 +337,7 @@ def download_from_gcs(gcs_path, download_path):
 def main(import_path, face_emb_path, caption_path, tmp_data_dir,
          ignore_existing_videos):
     password = os.getenv('POSTGRES_PASSWORD')
-    engine = sqlalchemy.create_engine(
-        'postgresql://admin:{}@localhost/tvnews'.format(password))
-    Session = sqlalchemy.orm.sessionmaker(
-        bind=engine, autoflush=False, autocommit=False)
-    session = Session()
+    session = get_db_session(password)
 
     assert os.path.isdir(face_emb_path), \
         'Face emb path does not exist! {}'.format(face_emb_path)

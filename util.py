@@ -1,4 +1,5 @@
 import os
+import sqlalchemy
 from datetime import datetime
 from functools import lru_cache
 
@@ -35,3 +36,11 @@ def get_or_create(session, model, **kwargs):
         # This flush is necessary in order to populate the primary key
         session.flush()
         return instance
+
+
+def get_db_session(password):
+    engine = sqlalchemy.create_engine(
+        'postgresql://admin:{}@localhost/tvnews'.format(password))
+    Session = sqlalchemy.orm.sessionmaker(
+        bind=engine, autoflush=False, autocommit=False)
+    session = Session()
