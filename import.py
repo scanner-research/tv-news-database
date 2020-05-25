@@ -150,6 +150,11 @@ def main(import_path):
     load_via_copy(cur, import_path, 'face_identity')
     load_via_copy(cur, import_path, 'commercial')
 
+    # Set up missing rows
+    session.add(schema.Labeler(name='handlabeled-gender'))
+    session.add(schema.FrameSampler(name='1s'))
+    session.commit()
+
 
 if __name__ == '__main__':
     main(**vars(get_args()))

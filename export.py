@@ -133,7 +133,7 @@ def get_all_identities(conn):
 
 def export_commercials(conn):
     start_time = time.time()
-    COMMERCIAL_INTERVAL_FILE = os.path.join(WIDGET_DATA_DIR, 'commercials.iset.bin')
+    commercial_interval_file = os.path.join(WIDGET_DATA_DIR, 'commercials.iset.bin')
 
     comm_labeler = get_labeler('haotian-commercials')
 
@@ -153,7 +153,7 @@ def export_commercials(conn):
         ORDER BY video_id, start_ms
     """.format(comm_labeler=comm_labeler.id))
 
-    with IntervalSetMappingWriter(COMMERCIAL_INTERVAL_FILE) as interval_writer:
+    with IntervalSetMappingWriter(commercial_interval_file) as interval_writer:
         cur_video_id = None
         buffered_tuples = []
         for video_id, start_ms, end_ms in cur:
@@ -172,7 +172,7 @@ def export_commercials(conn):
 # results. It takes about 90 minutes total.
 def get_faces_and_identties_from_db(conn):
     aws_identity_labeler = get_labeler('face-identity-rekognition')
-    aws_prop_identity_labeler = get_labeler('face-identity-rekognition:l2-dist-thresh=0.7')
+    aws_prop_identity_labeler = get_labeler('face-identity-rekognition:augmented-l2-dist=0.7')
     manual_gender_labeler = get_labeler('handlabeled-gender')
     knn_gender_labeler = get_labeler('knn-gender')
 
@@ -282,7 +282,11 @@ def get_identities_from_file(path):
         reader = csv.reader(fp)
 
         for row in reader:
-            face_id, video_id, start_ms, gender_id, gender_score, identity_id, identity_score, is_host, bbox_x1, bbox_x2, bbox_y1, bbox_y2 = row
+            (
+                face_id, video_id, start_ms, gender_id, gender_score,
+                identity_id, identity_score, is_host,
+                bbox_x1, bbox_x2, bbox_y1, bbox_y2
+            ) = row
             face_id = int(face_id)
             video_id = int(video_id)
             start_ms = int(float(start_ms))
@@ -294,14 +298,18 @@ def get_identities_from_file(path):
             is_host = is_host == 't'
             bbox_x1, bbox_x2 = float(bbox_x1), float(bbox_x2)
             bbox_y1, bbox_y2 = float(bbox_y1), float(bbox_y2)
-            yield (face_id, video_id, start_ms, gender_id, gender_score, identity_id, identity_score, is_host, bbox_x1, bbox_x2, bbox_y1, bbox_y2)
+            yield (
+                face_id, video_id, start_ms, gender_id, gender_score,
+                identity_id, identity_score, is_host,
+                bbox_x1, bbox_x2, bbox_y1, bbox_y2
+            )
 
 def export_faces_and_identities(conn):
-    IDENTITY_INTERVAL_DIR = os.path.join(WIDGET_DATA_DIR, 'people')
-    os.makedirs(IDENTITY_INTERVAL_DIR, exist_ok=True)
+    identity_interval_dir = os.path.join(WIDGET_DATA_DIR, 'people')
+    os.makedirs(identity_interval_dir, exist_ok=True)
 
-    FACE_BBOX_DIR = os.path.join(WIDGET_DATA_DIR, 'face-bboxes')
-    os.makedirs(FACE_BBOX_DIR, exist_ok=True)
+    face_bbox_dir = os.path.join(WIDGET_DATA_DIR, 'face-bboxes')
+    os.makedirs(face_bbox_dir, exist_ok=True)
 
     start_time = time.time()
     selected_identities = get_selected_identities(conn)
@@ -310,7 +318,7 @@ def export_faces_and_identities(conn):
 
     identity_ilist_writers = {
         id : IntervalListMappingWriter(
-            os.path.join(IDENTITY_INTERVAL_DIR, '{}.ilist.bin'.format(name.lower())), 1
+            os.path.join(identity_interval_dir, '{}.ilist.bin'.format(name.lower())), 1
         ) for id, name in selected_identities
     }
 
@@ -327,7 +335,8 @@ def export_faces_and_identities(conn):
     def save_bboxes_for_video(video_id, faces):
         identity_ids = {f['i'] for f in faces if 'i' in f}
         identities = [(identity_id_to_name.get(i, ''), i) for i in sorted(identity_ids)]
-        with open(os.path.join(FACE_BBOX_DIR, '{}.json'.format(video_id))) as fp:
+        face_bbox_file = os.path.join(face_bbox_dir, '{}.json'.format(video_id))
+        with open(face_bbox_file, 'w') as fp:
             json.dump({
                 'faces': faces,
                 'ids': identities
@@ -392,7 +401,8 @@ def export_faces_and_identities(conn):
             curr_video_intervals.append(interval_entry)
 
             face_meta = {
-                'g': 'O' if gender_id == NONBINARY_GENDER_ID else ('M' if gender_id == MALE_GENDER_ID else 'F),
+                'g': ('U' if gender_id == NONBINARY_GENDER_ID
+                      else ('M' if gender_id == MALE_GENDER_ID else 'F)),
                 't': [round(start_ms / 1000, 2), round(end_ms / 1000, 2)],
                 'b': [
                     round(bbox_x1, 2), round(bbox_y1, 2),
@@ -415,7 +425,7 @@ def export_faces_and_identities(conn):
 
 def export_videos(conn):
     start_time = time.time()
-    VIDEO_FILE = os.path.join(WIDGET_DATA_DIR, 'videos.json')
+    video_file = os.path.join(WIDGET_DATA_DIR, 'videos.json')
 
     # By default, psychopg2 loads the entire dataset in memory. Specifying a name
     # for the cursor makes it a server side cursor, which fetches data in chunks.
@@ -439,7 +449,7 @@ def export_videos(conn):
         WHERE NOT video.is_corrupt AND NOT video.is_duplicate
     """)
 
-    with open(VIDEO_FILE, 'w') as f:
+    with open(video_file, 'w') as f:
         json.dump(cur.fetchall(), f)
 
     print("Finished video export in {:.3f} seconds".format(time.time() - start_time))

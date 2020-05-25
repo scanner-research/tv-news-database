@@ -69,13 +69,13 @@ def get_import_context(
         name='knn-gender'
     ).one()
     face_labeler_object = session.query(schema.Labeler).filter_by(
-        name='MTCNN'
+        name='mtcnn'
     ).one()
     aws_identity_labeler_object = session.query(schema.Labeler).filter_by(
         name='face-identity-rekognition'
     ).one()
     aws_prop_identity_labeler_object = session.query(schema.Labeler).filter_by(
-        name='face-identity-rekognition:l2-dist-thresh=0.7'
+        name='face-identity-rekognition:augmented-l2-dist=0.7'
     ).one()
 
     male_gender_object = session.query(schema.Gender).filter_by(
