@@ -62,7 +62,7 @@ def get_import_context(
     ).one()
 
     commercial_labeler_object = session.query(schema.Labeler).filter_by(
-        name='haotian-commercial'
+        name='commercial'
     ).one()
 
     gender_labeler_object = session.query(schema.Labeler).filter_by(

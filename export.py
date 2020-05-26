@@ -114,6 +114,7 @@ def get_gender(name):
 # Given a connection to a database, get all identity ids and names with at
 # least 15 minutes of screentime. Takes about 3 minutes.
 def get_selected_identities(conn):
+    # Note: the time check doesn't work properly if the sample rate is variable
     cur = conn.cursor()
     cur.execute("""
         SELECT identity.id, identity.name

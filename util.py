@@ -11,7 +11,7 @@ def parse_video_name(name: str):
     if len(tokens) == 3:
         # Some videos have no show
         channel, ymd, hms = tokens
-        show = '
+        show = ''
     elif len(tokens) == 4:
         channel, ymd, hms, show = tokens
         show = show.replace('_', ' ')

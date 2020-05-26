@@ -8,7 +8,7 @@ class CanonicalShow(Base):
 	__tablename__ = 'canonical_show'
 	id = Column(Integer, primary_key=True)
 	name = Column(String, nullable=False)
-	is_recurring = Column(Boolean, default=False)
+	is_recurring = Column(Boolean, server_default='f')
 	channel_id = Column(Integer, ForeignKey('channel.id'), nullable=False)
 
 	UniqueConstraint('unique_name_channel', name, channel_id)
@@ -75,7 +75,7 @@ class Identity(Base):
 	__tablename__ = 'identity'
 	id = Column(Integer, primary_key=True)
 	name = Column(String, unique=True)
-	is_ignore = Column(Boolean, default=False, nullable=False)
+	is_ignore = Column(Boolean, server_default='f', nullable=False)
 
 class FaceIdentity(Base):
 	__tablename__ = 'face_identity'
