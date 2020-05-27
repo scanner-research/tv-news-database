@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
 import json
-import sqlalchemy
-import psycopg2
-import tqdm
-import subprocess
 import numpy as np
+import os
+import psycopg2
+import shutil
+import sqlalchemy
+import subprocess
+from functools import lru_cache
+from tqdm import tqdm
 from typing import Dict, NamedTuple
 
 import schema
@@ -46,6 +48,8 @@ def get_args():
                         help='Skip videos already in the database')
     parser.add_argument('--tmp-data-dir', type=str,
                         default='/tmp/tv-news-db-staging')
+    parser.add_argument('--db-name', type=str, default='tvnews')
+    parser.add_argument('--db-user', type=str, default='admin')
     return parser.parse_args()
 
 
@@ -99,7 +103,7 @@ def get_import_context(
         female_gender=female_gender_object)
 
 
-def import_video(session, import_context: ImportContext, video_path: str,
+def import_video(session, video_path: str,
                  video_name: str):
     meta_path = os.path.join(video_path, 'metadata.json')
     meta_dict = load_json(meta_path)
@@ -130,7 +134,7 @@ def import_commercials(
     for start_frame, end_frame in load_json(commercial_file):
         assert start_frame < end_frame, \
             'Invalid commercial: {} - {}'.format(start_frame, end_frame)
-        commercial_object = schema.Commerical(
+        commercial_object = schema.Commercial(
             labeler_id=import_context.commercial_labeler.id,
             max_frame=end_frame, min_frame=start_frame,
             video_id=video_object.id)
@@ -202,7 +206,7 @@ def get_or_create_identity(session, **kwargs):
     instance = session.query(schema.Identity).filter_by(**kwargs).first()
     if not instance:
         print('Creating identity:', kwargs)
-        instance = model(is_ignore=False, **kwargs)
+        instance = schema.Identity(is_ignore=False, **kwargs)
         session.add(instance)
         # This flush is necessary in order to populate the primary key
         session.flush()
@@ -218,10 +222,9 @@ def import_face_identities(
 
     # Add the original AWS identities
     base_face_ids = set()
-    for orig_face_id, name, score in load_json(base_face_ids):
+    for orig_face_id, name, score in load_json(base_identity_file):
         base_face_ids.add(orig_face_id)
         face_id = face_id_map[orig_face_id]
-        # TODO: Not sure how this handles null new columns
         identity_object = get_or_create_identity(session, name=name.lower())
         face_identity_object = schema.FaceIdentity(
             face_id=face_id, labeler_id=import_context.aws_identity_labeler.id,
@@ -238,10 +241,10 @@ def import_face_identities(
             face_id=face_id,
             labeler_id=import_context.aws_prop_identity_labeler.id,
             score=score, identity_id=identity_object.id)
-            session.add(face_identity_object)
+        session.add(face_identity_object)
 
 
-def save_embeddings(import_context, video_object, face_id_map):
+def save_embeddings(import_context, video_path, video_object, face_id_map):
     emb_file = os.path.join(video_path, 'embeddings.json')
     face_id_to_emb = {
         face_id_map[orig_face_id]: emb
@@ -255,13 +258,13 @@ def save_embeddings(import_context, video_object, face_id_map):
         import_context.face_emb_path, '{}.ids.npy'.format(video_object.id))
     emb_path = os.path.join(
         import_context.face_emb_path, '{}.data.npy'.format(video_object.id))
-    sorted_ids = [i for i in sorted(face_id_to_emb)]
+    sorted_ids = list(sorted(face_id_to_emb))
     np.save(id_path, np.array(sorted_ids, dtype=np.int64))
     np.save(emb_path, np.array([face_id_to_emb[i] for i in sorted_ids],
                                dtype=np.float32))
 
 
-def save_captions(import_context, video_name):
+def save_captions(import_context, video_path, video_name):
     caption_out_path = os.path.join(
         import_context.caption_path, '{}.align.srt'.format(video_name))
     caption_path = os.path.join(import_context.import_path, 'captions.srt')
@@ -312,8 +315,7 @@ def process_video(
             return
     else:
         print('Importing video: {}'.format(video_name))
-        video_object = import_video(session, import_context, video_path,
-                                    video_name)
+        video_object = import_video(session, video_path, video_name)
 
     face_id_map = import_faces(session, import_context, video_path,
                                video_object)
@@ -322,22 +324,21 @@ def process_video(
     import_commercials(session, import_context, video_path, video_object)
     session.flush()
 
-    save_embeddings(import_context, video_object, face_id_map)
-    save_captions(import_context, video_name)
+    save_embeddings(import_context, video_path, video_object, face_id_map)
+    save_captions(import_context, video_path, video_name)
 
 
 def download_from_gcs(gcs_path, download_path):
     subprocess.check_call([
         'gsutil', '-m', 'cp', '-nr', os.path.join(gcs_path), download_path
     ])
-    print('Downloaded data for {} videos.'.format(
-          len(os.listdir(download_path))))
+    print('Downloaded data for {} videos.'.format(len(os.listdir(download_path))))
 
 
 def main(import_path, face_emb_path, caption_path, tmp_data_dir,
-         ignore_existing_videos):
+         ignore_existing_videos, db_name, db_user):
     password = os.getenv('POSTGRES_PASSWORD')
-    session = get_db_session(password)
+    session = get_db_session(db_user, password, db_name)
 
     assert os.path.isdir(face_emb_path), \
         'Face emb path does not exist! {}'.format(face_emb_path)

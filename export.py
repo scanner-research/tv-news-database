@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """
 This script exports data from the postgres source of truth database in a format
 the tv-news-viewer can use. This includes the following files:
@@ -15,17 +17,20 @@ to change the per process limit.
 It runs in approximately 2 hours.
 """
 
+import argparse
+import csv
+import json
+import os
 import psycopg2
 import time
 import tqdm
-from typing import List, Tuple
-import os
-from sqlalchemy import func
 from collections import defaultdict
-import json
+from sqlalchemy import func
+from typing import List, Tuple
 
 import schema
 from util import get_db_session
+
 
 # Adapted from https://github.com/scanner-research/rs-intervalset/blob/master/rs_intervalset/writer.py
 class IntervalListMappingWriter(object):
@@ -62,6 +67,7 @@ class IntervalListMappingWriter(object):
             self._fp.close()
             self._fp = None
 
+
 class IntervalSetMappingWriter(object):
 
     def __init__(self, path: str):
@@ -91,6 +97,7 @@ class IntervalSetMappingWriter(object):
             self._fp.close()
             self._fp = None
 
+
 def encode_payload(is_male, is_nonbinary, is_host, height):
     ret = 0
     if is_male:
@@ -102,14 +109,18 @@ def encode_payload(is_male, is_nonbinary, is_host, height):
     ret |= min(round(height * 31), 31) << 3 # 5-bits
     return ret
 
-def get_labeler(name):
-    return session.query(table.Labeler).filter_by(name=name).one()
 
-def get_frame_sampler(name):
-    return session.query(table.FrameSampler).filter_by(name=name).one()
+def get_labeler(session, name):
+    return session.query(schema.Labeler).filter_by(name=name).one()
 
-def get_gender(name):
-    return session.query(table.Gender).filter_by(name=name).one()
+
+def get_frame_sampler(session, name):
+    return session.query(schema.FrameSampler).filter_by(name=name).one()
+
+
+def get_gender(session, name):
+    return session.query(schema.Gender).filter_by(name=name).one()
+
 
 # Given a connection to a database, get all identity ids and names with at
 # least 15 minutes of screentime. Takes about 3 minutes.
@@ -132,11 +143,11 @@ def get_all_identities(conn):
     return cur.fetchall()
 
 
-def export_commercials(conn):
+def export_commercials(conn, session, widget_data_dir):
     start_time = time.time()
-    commercial_interval_file = os.path.join(WIDGET_DATA_DIR, 'commercials.iset.bin')
+    commercial_interval_file = os.path.join(widget_data_dir, 'commercials.iset.bin')
 
-    comm_labeler = get_labeler('haotian-commercials')
+    comm_labeler = get_labeler(session, 'commercials')
 
     # By default, psychopg2 loads the entire dataset in memory. Specifying a name
     # for the cursor makes it a server side cursor, which fetches data in chunks.
@@ -169,16 +180,18 @@ def export_commercials(conn):
             interval_writer.write(cur_video_id, buffered_tuples)
     print("Finished commercial export in {:.3f} seconds".format(time.time() - start_time))
 
+
 # Join faces against just about every other table, and return a cursor for the
 # results. It takes about 90 minutes total.
-def get_faces_and_identties_from_db(conn):
-    aws_identity_labeler = get_labeler('face-identity-rekognition')
-    aws_prop_identity_labeler = get_labeler('face-identity-rekognition:augmented-l2-dist=0.7')
-    manual_gender_labeler = get_labeler('handlabeled-gender')
-    knn_gender_labeler = get_labeler('knn-gender')
+def get_faces_and_identities_from_db(conn, session):
+    aws_identity_labeler = get_labeler(session, 'face-identity-rekognition')
+    aws_prop_identity_labeler = get_labeler(
+        session, 'face-identity-rekognition:augmented-l2-dist=0.7')
+    manual_gender_labeler = get_labeler(session, 'handlabeled-gender')
+    knn_gender_labeler = get_labeler(session, 'knn-gender')
 
-    sampler_3s = get_frame_sampler('3s')
-    sampler_1s = get_frame_sampler('1s')
+    sampler_3s = get_frame_sampler(session, '3s')
+    sampler_1s = get_frame_sampler(session, '1s')
 
     sql = """
     WITH identities AS (
@@ -192,7 +205,7 @@ def get_faces_and_identties_from_db(conn):
             GROUP BY face_id
         ) AS t
         ON face_identity.face_id = t.face_id AND face_identity.score = t.max_score
-        WHERE labeler_id = {aws_identity} or labeler_id = {prop_identity} -- Only rekognition
+        WHERE face_identity.labeler_id = {aws_identity} or face_identity.labeler_id = {prop_identity} -- Only rekognition
         ),
 
     -- Get the gender for each face, with manual relabeling taking precedence (5 minutes)
@@ -221,7 +234,7 @@ def get_faces_and_identties_from_db(conn):
             WHERE labeler_id = {knn_gender} -- KNN-gender
         ) AS knn_gender
         ON manual_gender.face_id = knn_gender.face_id
-        ),
+        )
 
     -- Join face with gender, identity, hosts, and frames (45 minutes)
     SELECT
@@ -251,8 +264,8 @@ def get_faces_and_identties_from_db(conn):
         show.canonical_show_id = canonical_show_host.canonical_show_id AND identities.identity_id = canonical_show_host.identity_id
     )
     WHERE NOT video.is_corrupt AND NOT video.is_duplicate AND (
-        (year(video.time) >= 2019 AND frame.sampler_id = {sampler_1s}) OR
-        (year(video.time) < 2019 AMD frame.sampler_id = {sampler_3s})
+        (DATE_PART('year', video.time) >= 2019 AND frame.sampler_id = {sampler_1s}) OR
+        (DATE_PART('year', video.time) < 2019 AND frame.sampler_id = {sampler_3s})
     )
     ORDER BY
         frame.video_id,
@@ -265,6 +278,7 @@ def get_faces_and_identties_from_db(conn):
                manual_gender=manual_gender_labeler.id,
                aws_identity=aws_identity_labeler.id,
                prop_identity=aws_prop_identity_labeler.id)
+    print(sql)
 
     print("Starting the big query")
     # By default, psychopg2 loads the entire dataset in memory. Specifying a name
@@ -273,11 +287,10 @@ def get_faces_and_identties_from_db(conn):
     cur.execute(sql)
     return cur
 
-# If the query in get_faces_and_identties_from_db has already been run, exporting to a
+
+# If the query in get_faces_and_identities_from_db has already been run, exporting to a
 # CSV file, use this to use that file as a starting point.
 def get_identities_from_file(path):
-    import csv
-
     with open(path) as fp:
         fp.readline() # Skip headers
         reader = csv.reader(fp)
@@ -305,11 +318,12 @@ def get_identities_from_file(path):
                 bbox_x1, bbox_x2, bbox_y1, bbox_y2
             )
 
-def export_faces_and_identities(conn):
-    identity_interval_dir = os.path.join(WIDGET_DATA_DIR, 'people')
+
+def export_faces_and_identities(conn, session, widget_data_dir):
+    identity_interval_dir = os.path.join(widget_data_dir, 'people')
     os.makedirs(identity_interval_dir, exist_ok=True)
 
-    face_bbox_dir = os.path.join(WIDGET_DATA_DIR, 'face-bboxes')
+    face_bbox_dir = os.path.join(widget_data_dir, 'face-bboxes')
     os.makedirs(face_bbox_dir, exist_ok=True)
 
     start_time = time.time()
@@ -331,7 +345,7 @@ def export_faces_and_identities(conn):
             identity_ilist_writers[identity_id].write(video_id, face_ilist)
 
     # Lookup identity id to name
-    identity_id_to_name = {id: name for id, name in get_all_identities()}
+    identity_id_to_name = dict(get_all_identities(conn))
 
     def save_bboxes_for_video(video_id, faces):
         identity_ids = {f['i'] for f in faces if 'i' in f}
@@ -341,24 +355,23 @@ def export_faces_and_identities(conn):
             json.dump({
                 'faces': faces,
                 'ids': identities
-            })
+            }, fp)
 
-    MALE_GENDER_ID = get_gender('M').id
-    NONBINARY_GENDER_ID = get_gender('O').id
+    male_gender_id = get_gender(session, 'M').id
+    non_binary_gender_id = get_gender(session, 'U').id
 
-    SAMPLER_1S_ID = get_frame_sampler('1s').id
-    SAMPLER_3S_ID = get_frame_sampler('3s').id
+    sampler_1s_id = get_frame_sampler(session, '1s').id
+    sampler_3s_id = get_frame_sampler(session, '3s').id
 
     curr_video_id = None
 
     # Count the number of faces for a progress bar estimate
-    face_count = session.query(func.count(schema.Faces.id)).scalar()
+    face_count = session.query(func.count(schema.Face.id)).scalar()
 
     with IntervalListMappingWriter(
-        os.path.join(WIDGET_DATA_DIR, 'faces.ilist.bin'),
-        1
+            os.path.join(widget_data_dir, 'faces.ilist.bin'), 1
     ) as all_faces_writer:
-        face_iterator = get_faces_and_identties_from_db(conn)
+        face_iterator = get_faces_and_identities_from_db(conn, session)
 
         for row in tqdm.tqdm(face_iterator, total=face_count):
             (
@@ -380,9 +393,9 @@ def export_faces_and_identities(conn):
                 curr_video_intervals = []
                 curr_video_faces = []
 
-            if frame_sampler_id == SAMPLER_1S_ID:
+            if frame_sampler_id == sampler_1s_id:
                 end_ms = start_ms + 1000
-            elif frame_sampler_id == SAMPLER_3S_ID:
+            elif frame_sampler_id == sampler_3s_id:
                 end_ms = start_ms + 3000
             else:
                 raise Exception('Unknown frame sampler: {}'.format(frame_sampler_id))
@@ -393,17 +406,17 @@ def export_faces_and_identities(conn):
             interval_entry = (
                 start_ms, end_ms,
                 encode_payload(
-                     gender_id == MALE_GENDER_ID,
-                     gender_id == NONBINARY_GENDER_ID,
-                     is_host, height)
+                    gender_id == male_gender_id,
+                    gender_id == non_binary_gender_id,
+                    is_host, height)
             )
             if identity_id in selected_identities:
                 curr_ilist_accumulators[identity_id].append(interval_entry)
             curr_video_intervals.append(interval_entry)
 
             face_meta = {
-                'g': ('U' if gender_id == NONBINARY_GENDER_ID
-                      else ('M' if gender_id == MALE_GENDER_ID else 'F)),
+                'g': ('U' if gender_id == non_binary_gender_id
+                      else ('M' if gender_id == male_gender_id else 'F')),
                 't': [round(start_ms / 1000, 2), round(end_ms / 1000, 2)],
                 'b': [
                     round(bbox_x1, 2), round(bbox_y1, 2),
@@ -411,7 +424,7 @@ def export_faces_and_identities(conn):
                 ]
             }
             if identity_id is not None:
-                face_meta[i] = identity_id
+                face_meta['i'] = identity_id
             curr_video_faces.append(face_meta)
 
         if curr_video_id is not None:
@@ -424,9 +437,31 @@ def export_faces_and_identities(conn):
         for iw in identity_ilist_writers.values():
             iw.close()
 
-def export_videos(conn):
+
+def export_hosts(conn, widget_data_dir):
     start_time = time.time()
-    video_file = os.path.join(WIDGET_DATA_DIR, 'videos.json')
+    print("Starting host export")
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT channel.name, identity.name
+        FROM channel_host
+        INNER JOIN channel ON channel.id = channel_host.channel_id
+        INNER JOIN identity ON identity.id = channel_host.identity_id
+        GROUP BY channel.name, identity.name
+        ORDER BY channel.name, identity.name;
+    """)
+    host_file = os.path.join(widget_data_dir, 'hosts.csv')
+    with open(host_file, 'w') as fp:
+        writer = csv.writer(fp)
+        writer.writerow(['channel', 'name'])
+        for channel_name, host_name in cur.fetchall():
+            writer.writerow([channel_name, host_name])
+    print("Finished host export in {:.3f} seconds".format(time.time() - start_time))
+
+
+def export_videos(conn, widget_data_dir):
+    start_time = time.time()
+    video_file = os.path.join(widget_data_dir, 'videos.json')
 
     # By default, psychopg2 loads the entire dataset in memory. Specifying a name
     # for the cursor makes it a server side cursor, which fetches data in chunks.
@@ -455,17 +490,32 @@ def export_videos(conn):
 
     print("Finished video export in {:.3f} seconds".format(time.time() - start_time))
 
-if __name__ == '__main__':
+
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('widget_dir', type=str)
+    parser.add_argument('--db-name', type=str, default='tvnews')
+    parser.add_argument('--db-user', type=str, default='admin')
+    return parser.parse_args()
+
+
+def main(widget_dir, db_name, db_user):
     start_time = time.time()
+
     password = os.getenv("POSTGRES_PASSWORD")
-    conn = psycopg2.connect(dbname="tvnews", user="admin", host='localhost', password=password)
-    session = get_db_session(password)
+    conn = psycopg2.connect(dbname=db_name, user=db_user,
+                            host='localhost', password=password)
+    session = get_db_session(db_user, password, db_name)
 
-    WIDGET_DATA_DIR = '/newdisk/widget-data'
-    os.makedirs(WIDGET_DATA_DIR, exist_ok=True)
+    os.makedirs(widget_dir, exist_ok=True)
 
-    export_videos(conn)
-    export_commercials(conn)
-    export_faces_and_identities(conn)
+    export_hosts(conn, widget_dir)
+    export_videos(conn, widget_dir)
+    export_commercials(conn, session, widget_dir)
+    export_faces_and_identities(conn, session, widget_dir)
 
     print("Total time to export: {:3f} seconds".format(time.time() - start_time))
+
+
+if __name__ == '__main__':
+    main(**vars(get_args()))

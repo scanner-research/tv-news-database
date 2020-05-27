@@ -12,10 +12,10 @@
 
 
 import argparse
-import os
 import csv
-import sqlalchemy
+import os
 import psycopg2
+import sqlalchemy
 import tqdm
 
 import schema
@@ -57,20 +57,23 @@ def load_videos(session, video_csv, show_to_canonical_show_csv):
             if canonical_show is None:
                 print('Missing canonical show for show:', show)
                 canonical_show = show
-            canonical_show_object = get_or_create(session, schema.CanonicalShow,
+            canonical_show_object = get_or_create(
+                session, schema.CanonicalShow,
                 name=canonical_show, is_recurring=is_recurring,
                 channel_id=channel_object.id)
 
             # create Show if needed
-            show_object = get_or_create(session, schema.Show,
-                name=show,
+            show_object = get_or_create(
+                session, schema.Show, name=show,
                 channel_id=channel_object.id,
                 canonical_show_id=canonical_show_object.id)
 
             # create the Video
-            session.add(schema.Video(id=vid, name=name, num_frames=num_frames,
+            session.add(schema.Video(
+                id=vid, name=name, num_frames=num_frames,
             	fps=fps, width=width, height=height, time=timestamp,
-                show_id=show_object.id, is_duplicate=is_duplicate, is_corrupt=is_corrupt))
+                show_id=show_object.id, is_duplicate=is_duplicate,
+                is_corrupt=is_corrupt))
 
     session.commit()
 
@@ -93,8 +96,9 @@ def load_hosts_staff(engine, session, host_staff_csv):
                 channel_id = conn.execute(s).fetchone()['id']
 
                 # create new host_staff_row
-                session.add(schema.ChannelHosts(identity_id=identity_id,
-                    channel_id=channel_id))
+                session.add(
+                    schema.ChannelHosts(identity_id=identity_id,
+                        channel_id=channel_id))
 
             if canonical_show_name != '':
                 s = sqlalchemy.select([schema.CanonicalShow]).where(
@@ -102,8 +106,9 @@ def load_hosts_staff(engine, session, host_staff_csv):
                 canonical_show_id = conn.execute(s).fetchone()['id']
 
                 # create new host_staff_row
-                session.add(schema.CanonicalShowHosts(identity_id=identity_id,
-                    canonical_show_id=canonical_show_id))
+                session.add(
+                    schema.CanonicalShowHosts(identity_id=identity_id,
+                        canonical_show_id=canonical_show_id))
 
     session.commit()
 
@@ -179,9 +184,6 @@ def main(import_path, db_name, db_user):
         schema.Labeler.name: 'commercials'
     })
     session.commit()
-
-    # Clean up labeler ids
-    clean_up_labeler_ids(conn, session);
 
     # Set sequence numbers
     set_id_sequence(conn, 'labeler')

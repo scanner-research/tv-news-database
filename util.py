@@ -30,17 +30,16 @@ def get_or_create(session, model, **kwargs):
     instance = session.query(model).filter_by(**kwargs).first()
     if instance:
         return instance
-    else:
-        instance = model(**kwargs)
-        session.add(instance)
-        # This flush is necessary in order to populate the primary key
-        session.flush()
-        return instance
+
+    instance = model(**kwargs)
+    session.add(instance)
+    # This flush is necessary in order to populate the primary key
+    session.flush()
+    return instance
 
 
-def get_db_session(password):
+def get_db_session(user, password, db_name):
     engine = sqlalchemy.create_engine(
-        'postgresql://admin:{}@localhost/tvnews'.format(password))
-    Session = sqlalchemy.orm.sessionmaker(
-        bind=engine, autoflush=False, autocommit=False)
-    session = Session()
+        'postgresql://{}:{}@localhost/{}'.format(user, password, db_name))
+    return sqlalchemy.orm.sessionmaker(
+        bind=engine, autoflush=False, autocommit=False)()
