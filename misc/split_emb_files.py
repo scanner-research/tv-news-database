@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 
-import os
 import argparse
 import numpy as np
-import sqlalchemy
-import psycopg2
+import os
+import sys
 from datetime import datetime
 from tqdm import tqdm
 
 from rs_embed import EmbeddingData
-from ... import schema
-from ... import util
+
+sys.path.append('../')
+import schema
+import util
 
 
 def get_videos(session):
@@ -55,7 +56,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('in_ids', type=str)
     parser.add_argument('in_embs', type=str)
-    parser.add_argument('-o', 'out_dir', type=str, default='out')
+    parser.add_argument('out_dir', type=str)
     parser.add_argument('--db-name', type=str, default='tvnews')
     parser.add_argument('--db-user', type=str, default='admin')
     return parser.parse_args()

@@ -415,8 +415,8 @@ def export_faces_and_identities(conn, session, widget_data_dir):
             curr_video_intervals.append(interval_entry)
 
             face_meta = {
-                'g': ('U' if gender_id == non_binary_gender_id
-                      else ('M' if gender_id == male_gender_id else 'F')),
+                'g': ('u' if gender_id == non_binary_gender_id
+                      else ('m' if gender_id == male_gender_id else 'f')),
                 't': [round(start_ms / 1000, 2), round(end_ms / 1000, 2)],
                 'b': [
                     round(bbox_x1, 2), round(bbox_y1, 2),
