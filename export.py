@@ -21,12 +21,12 @@ import argparse
 import csv
 import json
 import os
-import psycopg2
 import time
-import tqdm
 from collections import defaultdict
-from sqlalchemy import func
 from typing import List, Tuple
+import psycopg2
+import tqdm
+from sqlalchemy import func
 
 import schema
 from util import get_db_session

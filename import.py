@@ -15,14 +15,19 @@ import argparse
 import csv
 import os
 import psycopg2
+import shutil
 import sqlalchemy
-import tqdm
+import tempfile
+from multiprocessing import Pool
+from subprocess import check_call
+from tqdm import tqdm
 
 import schema
 from util import get_or_create, parse_video_name
 
 
 def load_videos(session, video_csv, show_to_canonical_show_csv):
+    print('Importing video, show, canonical_show')
     canonical_show_dict = {}
     with open(show_to_canonical_show_csv) as fp:
         fp.readline() # Skip headers
@@ -35,7 +40,7 @@ def load_videos(session, video_csv, show_to_canonical_show_csv):
     with open(video_csv) as fp:
         fp.readline() # Skip headers
         reader = csv.reader(fp)
-        for row in tqdm.tqdm(reader):
+        for row in tqdm(reader):
             (
                 vid, name, num_frames, fps, width, height,
                 is_duplicate, is_corrupt
@@ -78,42 +83,41 @@ def load_videos(session, video_csv, show_to_canonical_show_csv):
     session.commit()
 
 
-def load_hosts_staff(engine, session, host_staff_csv):
-    conn = engine.connect()
+def load_hosts_staff(session, host_staff_csv):
+    print('Importing channel_host, canonical_show_host')
     with open(host_staff_csv) as fp:
         fp.readline() # Skip headers
         reader = csv.reader(fp)
-        for row in tqdm.tqdm(reader):
+        for row in tqdm(reader):
             channel_name, canonical_show_name, identity_name = row
 
-            s = sqlalchemy.select([schema.Identity]).where(
-                schema.Identity.name == identity_name)
-            identity_id = conn.execute(s).fetchone()['id']
+            identity_id = session.query(schema.Identity).filter_by(
+                name=identity_name).one().id
 
-            if channel_name != '':
-                s = sqlalchemy.select([schema.Channel]).where(
-                    schema.Channel.name == channel_name)
-                channel_id = conn.execute(s).fetchone()['id']
+            channel_id = session.query(schema.Channel).filter_by(
+                name=channel_name).one().id
+
+            if canonical_show_name == '':
+                # create new host_staff_row
+                session.add(
+                    schema.ChannelHosts(
+                        identity_id=identity_id, channel_id=channel_id))
+
+            else:
+                canonical_show_id = session.query(schema.CanonicalShow).filter_by(
+                    name=canonical_show_name, channel_id=channel_id).one().id
 
                 # create new host_staff_row
                 session.add(
-                    schema.ChannelHosts(identity_id=identity_id,
-                        channel_id=channel_id))
-
-            if canonical_show_name != '':
-                s = sqlalchemy.select([schema.CanonicalShow]).where(
-                    schema.CanonicalShow.name == canonical_show_name)
-                canonical_show_id = conn.execute(s).fetchone()['id']
-
-                # create new host_staff_row
-                session.add(
-                    schema.CanonicalShowHosts(identity_id=identity_id,
+                    schema.CanonicalShowHosts(
+                        identity_id=identity_id,
                         canonical_show_id=canonical_show_id))
 
     session.commit()
 
 
-def load_via_copy(conn, cur, import_path, table):
+def load_via_copy(conn, import_path, table):
+    cur = conn.cursor()
     source_csv = os.path.join(import_path, '{}.csv'.format(table))
     with open(source_csv) as fp:
         headers = fp.readline() # Skip the headers
@@ -122,6 +126,62 @@ def load_via_copy(conn, cur, import_path, table):
         # TODO disable triggers for constraints
         cur.copy_expert('copy {}({}) from stdin (format csv)'.format(table, headers), fp)
         conn.commit()
+
+
+def init_worker(function, conn_args):
+    function.conn = psycopg2.connect(**conn_args)
+
+
+def copy_worker(args):
+    source_csv, table = args
+    cur = copy_worker.conn.cursor()
+    with open(source_csv) as fp:
+        headers = fp.readline() # Skip the headers
+        cur.copy_expert('copy {}({}) from stdin (format csv)'.format(table, headers), fp)
+        copy_worker.conn.commit()
+    os.remove(source_csv)
+copy_worker.conn = None
+
+
+def split_csv(source_csv, n, out_dir):
+    chunks = []
+    with open(source_csv, 'r') as fp:
+        headers = fp.readline()
+        ofp = None
+        for i, line in enumerate(fp):
+            if ofp is None:
+                chunk_path = os.path.join(out_dir, '{}.csv'.format(i))
+                chunks.append(chunk_path)
+                ofp = open(chunk_path, 'w')
+                ofp.write(headers)
+
+            ofp.write(line)
+
+            if i % n == n - 1:
+                ofp.close()
+                ofp = None
+        if ofp is not None:
+            ofp.close()
+    return chunks, headers
+
+
+def parallel_load_via_copy(conn_args, import_path, table, n=100000):
+    source_csv = os.path.join(import_path, '{}.csv'.format(table))
+    tmp_dir = None
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix='db-import-{}-'.format(table))
+        print('Splitting {} csv: {}'.format(table, tmp_dir))
+        chunks, headers = split_csv(source_csv, n, tmp_dir)
+        print('Importing {} with columns ({})'.format(table, headers[:-1]))
+        with Pool(initializer=init_worker, initargs=(copy_worker, conn_args)) as p:
+            for _ in tqdm(
+                p.imap_unordered(copy_worker, [(c, table) for c in chunks]),
+                total=len(chunks)
+            ):
+                pass
+    finally:
+        if tmp_dir and os.path.isdir(tmp_dir):
+            shutil.rmtree(tmp_dir)
 
 
 def set_id_sequence(conn, table):
@@ -146,9 +206,11 @@ def main(import_path, db_name, db_user):
     engine = sqlalchemy.create_engine(
         'postgresql://{}:{}@localhost/{}'.format(db_user, password, db_name))
 
-    conn = psycopg2.connect(dbname=db_name, user=db_user, host='localhost',
-                            password=password)
-    cur = conn.cursor()
+    conn_args = {
+        'dbname': db_name, 'user': db_user, 'host': 'localhost',
+        'password': password
+    }
+    conn = psycopg2.connect(**conn_args)
 
     schema.Face.metadata.create_all(engine)
 
@@ -157,10 +219,10 @@ def main(import_path, db_name, db_user):
 
     # # Load the rest of the tables, that don't require ETL, with COPY.
     # This order matters. It must obey dependencies.
-    load_via_copy(conn, cur, import_path, 'labeler')
-    load_via_copy(conn, cur, import_path, 'frame_sampler')
-    load_via_copy(conn, cur, import_path, 'gender')
-    load_via_copy(conn, cur, import_path, 'identity')
+    load_via_copy(conn, import_path, 'labeler')
+    load_via_copy(conn, import_path, 'frame_sampler')
+    load_via_copy(conn, import_path, 'gender')
+    load_via_copy(conn, import_path, 'identity')
 
     # videos, channel, show, and canonical_show require special pre-processing
     load_videos(session, os.path.join(import_path, 'video.csv'),
@@ -168,15 +230,14 @@ def main(import_path, db_name, db_user):
 
     # hosts_and_staff requires special processing as well. It depends on the
     # identity table.
-    load_hosts_staff(engine, session,
-                     os.path.join(import_path, 'hosts_and_staff.csv'))
+    load_hosts_staff(session, os.path.join(import_path, 'hosts_and_staff.csv'))
 
     # These tables depend on video, and must be loaded after it
-    load_via_copy(conn, cur, import_path, 'commercial')
-    load_via_copy(conn, cur, import_path, 'frame')
-    load_via_copy(conn, cur, import_path, 'face')
-    load_via_copy(conn, cur, import_path, 'face_gender')
-    load_via_copy(conn, cur, import_path, 'face_identity')
+    load_via_copy(conn, import_path, 'commercial')
+    parallel_load_via_copy(conn_args, import_path, 'frame')
+    parallel_load_via_copy(conn_args, import_path, 'face')
+    parallel_load_via_copy(conn_args, import_path, 'face_gender')
+    parallel_load_via_copy(conn_args, import_path, 'face_identity')
 
     # Rename commercial labeler
     print('Renaming commercial labeler')
@@ -186,6 +247,8 @@ def main(import_path, db_name, db_user):
     session.commit()
 
     # Set sequence numbers
+    conn = psycopg2.connect(dbname=db_name, user=db_user, host='localhost',
+                            password=password)
     set_id_sequence(conn, 'labeler')
     set_id_sequence(conn, 'frame_sampler')
     set_id_sequence(conn, 'gender')
@@ -217,7 +280,6 @@ def main(import_path, db_name, db_user):
 
     session.commit()
     print('Done!')
-
 
 
 if __name__ == '__main__':

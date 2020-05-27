@@ -2,18 +2,16 @@
 
 import argparse
 import json
-import numpy as np
 import os
-import psycopg2
 import shutil
-import sqlalchemy
 import subprocess
 from functools import lru_cache
-from tqdm import tqdm
 from typing import Dict, NamedTuple
+import numpy as np
+from tqdm import tqdm
 
 import schema
-from util import get_db_session, get_or_create, parse_video_name
+from util import get_db_session, parse_video_name
 
 
 EMBEDDING_DIM = 128
@@ -53,7 +51,7 @@ def get_args():
     return parser.parse_args()
 
 
-def load_json(fpath):
+def load_json(fpath: str):
     with open(fpath) as fp:
         return json.load(fp)
 
