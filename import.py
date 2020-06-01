@@ -14,12 +14,11 @@
 import argparse
 import csv
 import os
-import psycopg2
 import shutil
-import sqlalchemy
 import tempfile
 from multiprocessing import Pool
-from subprocess import check_call
+import psycopg2
+import sqlalchemy
 from tqdm import tqdm
 
 import schema
@@ -261,6 +260,7 @@ def main(import_path, db_name, db_user):
     # Set up missing rows
     print('Set up new rows')
     session.add(schema.Labeler(name='handlabeled-gender', is_handlabel=True))
+    session.add(schema.Labeler(name='commercials-1s', is_handlabel=False))
     session.add(schema.FrameSampler(name='1s'))
 
     # Drop extra mtcnn labeler

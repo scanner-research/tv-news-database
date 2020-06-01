@@ -45,9 +45,9 @@ def write_emb_files(emb_data, out_dir, video, face_ids):
             len(face_ids), len(sorted_ids), video.name))
 
     id_path = os.path.join(
-        out_dir, '{}.ids.npy'.format(video.id))
+        out_dir, '{}.ids.npy'.format(video.name))
     emb_path = os.path.join(
-        out_dir, '{}.data.npy'.format(video.id))
+        out_dir, '{}.data.npy'.format(video.name))
     np.save(id_path, np.array(sorted_ids, dtype=np.int64))
     np.save(emb_path, np.array(sorted_embs, dtype=np.float32))
 

@@ -123,17 +123,38 @@ def get_gender(session, name):
 
 
 # Given a connection to a database, get all identity ids and names with at
-# least 15 minutes of screentime. Takes about 3 minutes.
-def get_selected_identities(conn):
-    # Note: the time check doesn't work properly if the sample rate is variable
+# least X minutes of screentime. Takes about 20 minutes.
+def get_selected_identities(conn, session, min_person_screen_time=30):
+    sampler_3s = get_frame_sampler(session, '3s')
+    sampler_1s = get_frame_sampler(session, '1s')
+
+    aws_identity_labeler = get_labeler(session, 'face-identity-rekognition')
+    aws_prop_identity_labeler = get_labeler(
+        session, 'face-identity-rekognition:augmented-l2-dist=0.7')
+
     cur = conn.cursor()
     cur.execute("""
         SELECT identity.id, identity.name
         FROM face_identity
         INNER JOIN identity ON identity.id = face_identity.identity_id
+        INNER JOIN face ON face_id = face.id
+        INNER JOIN frame ON face.frame_id = frame.id
+        INNER JOIN video ON frame.video_id = video.id
+        WHERE NOT video.is_corrupt AND NOT video.is_duplicate AND (
+            face_identity.labeler_id = {aws_identity} OR face_identity.labeler_id = {prop_identity} -- Only rekognition
+        ) AND (
+        	(DATE_PART('year', video.time) >= 2019 AND frame.sampler_id = {sampler_1s}) OR
+            (DATE_PART('year', video.time) < 2019 AND frame.sampler_id = {sampler_3s})
+        )
         GROUP BY identity.id, identity.name
-        HAVING COUNT(*) > 15 * 60 / 3 -- at a sampling rate of once every 3 seconds, this is 15 minutes
-    """)
+        HAVING SUM(CASE WHEN frame.sampler_id = {sampler_3s} THEN 3 ELSE 1 END) >= {seconds}
+    """.format(
+        sampler_3s=sampler_3s.id,
+        sampler_1s=sampler_1s.id,
+        aws_identity=aws_identity_labeler.id,
+        prop_identity=aws_prop_identity_labeler.id,
+        seconds=60 * min_person_screen_time
+    ))
     return cur.fetchall()
 
 
@@ -148,6 +169,7 @@ def export_commercials(conn, session, widget_data_dir):
     commercial_interval_file = os.path.join(widget_data_dir, 'commercials.iset.bin')
 
     comm_labeler = get_labeler(session, 'commercials')
+    comm_labeler_1s = get_labeler(session, 'commercials-1s')
 
     # By default, psychopg2 loads the entire dataset in memory. Specifying a name
     # for the cursor makes it a server side cursor, which fetches data in chunks.
@@ -161,9 +183,12 @@ def export_commercials(conn, session, widget_data_dir):
             max_frame / fps * 1000 AS end_ms
         FROM commercial
         LEFT JOIN video ON commercial.video_id = video.id
-        WHERE commercial.labeler_id={comm_labeler} AND NOT is_corrupt AND NOT is_duplicate
+        WHERE NOT is_corrupt AND NOT is_duplicate AND (
+            (DATE_PART('year', video.time) >= 2019 AND commercial.labeler_id={comm_labeler_1s}) OR
+            (DATE_PART('year', video.time) < 2019 AND commercial.labeler_id={comm_labeler})
+        )
         ORDER BY video_id, start_ms
-    """.format(comm_labeler=comm_labeler.id))
+    """.format(comm_labeler=comm_labeler.id, comm_labeler_1s=comm_labeler_1s.id))
 
     with IntervalSetMappingWriter(commercial_interval_file) as interval_writer:
         cur_video_id = None
@@ -205,7 +230,7 @@ def get_faces_and_identities_from_db(conn, session):
             GROUP BY face_id
         ) AS t
         ON face_identity.face_id = t.face_id AND face_identity.score = t.max_score
-        WHERE face_identity.labeler_id = {aws_identity} or face_identity.labeler_id = {prop_identity} -- Only rekognition
+        WHERE face_identity.labeler_id = {aws_identity} OR face_identity.labeler_id = {prop_identity} -- Only rekognition
         ),
 
     -- Get the gender for each face, with manual relabeling taking precedence (5 minutes)
@@ -327,7 +352,7 @@ def export_faces_and_identities(conn, session, widget_data_dir):
     os.makedirs(face_bbox_dir, exist_ok=True)
 
     start_time = time.time()
-    selected_identities = get_selected_identities(conn)
+    selected_identities = get_selected_identities(conn, session)
     print("Fetched {} selected identities in {:.3f} seconds".format(
         len(selected_identities), time.time() - start_time))
 

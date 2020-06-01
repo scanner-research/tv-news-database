@@ -42,4 +42,5 @@ def get_db_session(user, password, db_name):
     engine = sqlalchemy.create_engine(
         'postgresql://{}:{}@localhost/{}'.format(user, password, db_name))
     return sqlalchemy.orm.sessionmaker(
-        bind=engine, autoflush=False, autocommit=False)()
+        bind=engine, autoflush=False, autocommit=False,
+        expire_on_commit=False)()

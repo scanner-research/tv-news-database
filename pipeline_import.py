@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections import Counter
 from functools import lru_cache
 from typing import Dict, NamedTuple
 import numpy as np
@@ -18,7 +19,6 @@ EMBEDDING_DIM = 128
 
 
 class ImportContext(NamedTuple):
-    import_path: str
     face_emb_path: str
     caption_path: str
 
@@ -42,10 +42,10 @@ def get_args():
                         help='Directory to save embeddings to')
     parser.add_argument('caption_path', type=str,
                         help='Directory to save captions to')
-    parser.add_argument('--ignore-existing-videos', action='store_true',
-                        help='Skip videos already in the database')
+    parser.add_argument('--import-existing-videos', action='store_true',
+                        help='Import videos already in the database')
     parser.add_argument('--tmp-data-dir', type=str,
-                        default='/tmp/tv-news-db-staging')
+                        default='/tmp')
     parser.add_argument('--db-name', type=str, default='tvnews')
     parser.add_argument('--db-user', type=str, default='admin')
     return parser.parse_args()
@@ -57,14 +57,14 @@ def load_json(fpath: str):
 
 
 def get_import_context(
-    session, import_path: str, face_emb_path: str, caption_path: str
+    session, face_emb_path: str, caption_path: str
 ):
     frame_sampler_object = session.query(schema.FrameSampler).filter_by(
         name='1s'
     ).one()
 
     commercial_labeler_object = session.query(schema.Labeler).filter_by(
-        name='commercial'
+        name='commercials-1s'
     ).one()
 
     gender_labeler_object = session.query(schema.Labeler).filter_by(
@@ -88,7 +88,6 @@ def get_import_context(
     ).one()
 
     return ImportContext(
-        import_path=import_path,
         face_emb_path=face_emb_path,
         caption_path=caption_path,
         frame_sampler=frame_sampler_object,
@@ -179,12 +178,12 @@ def import_face_genders(
     session, import_context: ImportContext, video_path: str,
     face_id_map: Dict[int, int]
 ):
-    gender_file = os.path.join(video_path, 'gender.json')
+    gender_file = os.path.join(video_path, 'genders.json')
     for orig_face_id, gender, score in load_json(gender_file):
         assert score >= 0.5 and score <= 1., \
             'Score has an invalid range: {}'.format(score)
 
-        face_id = face_id_map[orig_face_id].id
+        face_id = face_id_map[orig_face_id]
         if gender == 'M':
             gender_id = import_context.male_gender.id
         elif gender == 'F':
@@ -216,25 +215,41 @@ def import_face_identities(
     face_id_map: Dict[int, int]
 ):
     base_identity_file = os.path.join(video_path, 'identities.json')
-    prop_identity_file = os.path.join(video_path, 'identities_propagated.json')
+    prop_identity_file = os.path.join(video_path, 'identities_propogated.json')
 
     # Add the original AWS identities
     base_face_ids = set()
+    name_to_count = Counter()
     for orig_face_id, name, score in load_json(base_identity_file):
+        assert orig_face_id not in base_face_ids
         base_face_ids.add(orig_face_id)
         face_id = face_id_map[orig_face_id]
-        identity_object = get_or_create_identity(session, name=name.lower())
+        lower_name = name.lower()
+        name_to_count[lower_name] += 1
+        identity_object = get_or_create_identity(session, name=lower_name)
         face_identity_object = schema.FaceIdentity(
             face_id=face_id, labeler_id=import_context.aws_identity_labeler.id,
             score=score, identity_id=identity_object.id)
         session.add(face_identity_object)
 
-    # Add the propagated AWS identities
+    # Collect conflicting votes
+    orig_face_id_to_entries = {}
     for orig_face_id, name, score in load_json(prop_identity_file):
         if orig_face_id in base_face_ids:
             continue
+        lower_name = name.lower()
+        lower_name_count = name_to_count[lower_name]
+        if (
+            not orig_face_id in orig_face_id_to_entries
+            or orig_face_id_to_entries[orig_face_id][-1] < lower_name_count
+        ):
+            orig_face_id_to_entries[orig_face_id] = (
+                lower_name, score, lower_name_count)
+
+    # Add the propagated AWS identities
+    for orig_face_id, (lower_name, score, _) in sorted(orig_face_id_to_entries.items()):
         face_id = face_id_map[orig_face_id]
-        identity_object = get_or_create_identity(session, name=name.lower())
+        identity_object = get_or_create_identity(session, name=lower_name)
         face_identity_object = schema.FaceIdentity(
             face_id=face_id,
             labeler_id=import_context.aws_prop_identity_labeler.id,
@@ -242,7 +257,7 @@ def import_face_identities(
         session.add(face_identity_object)
 
 
-def save_embeddings(import_context, video_path, video_object, face_id_map):
+def save_embeddings(import_context, video_path, video_name, face_id_map):
     emb_file = os.path.join(video_path, 'embeddings.json')
     face_id_to_emb = {
         face_id_map[orig_face_id]: emb
@@ -253,9 +268,9 @@ def save_embeddings(import_context, video_path, video_object, face_id_map):
             'Incorrect embedding dim: {} != {}'.format(len(emb), EMBEDDING_DIM)
 
     id_path = os.path.join(
-        import_context.face_emb_path, '{}.ids.npy'.format(video_object.id))
+        import_context.face_emb_path, '{}.ids.npy'.format(video_name))
     emb_path = os.path.join(
-        import_context.face_emb_path, '{}.data.npy'.format(video_object.id))
+        import_context.face_emb_path, '{}.data.npy'.format(video_name))
     sorted_ids = list(sorted(face_id_to_emb))
     np.save(id_path, np.array(sorted_ids, dtype=np.int64))
     np.save(emb_path, np.array([face_id_to_emb[i] for i in sorted_ids],
@@ -264,15 +279,15 @@ def save_embeddings(import_context, video_path, video_object, face_id_map):
 
 def save_captions(import_context, video_path, video_name):
     caption_out_path = os.path.join(
-        import_context.caption_path, '{}.align.srt'.format(video_name))
-    caption_path = os.path.join(import_context.import_path, 'captions.srt')
+        import_context.caption_path, '{}.srt'.format(video_name))
+    caption_path = os.path.join(video_path, 'captions.srt')
     shutil.copyfile(caption_path, caption_out_path)
 
 
 @lru_cache(1024)
 def get_or_create_show(session, channel: str, show: str):
     channel_object = session.query(schema.Channel).filter_by(
-        channel=channel
+        name=channel
     ).one()
     assert channel_object, 'Unknown channel: {}'.format(channel)
 
@@ -295,20 +310,18 @@ def get_or_create_show(session, channel: str, show: str):
         return show_object
 
 
-def process_video(
-    session, import_context: ImportContext, video_name: str,
-    ignore_existing_videos: bool
-):
-    video_path = os.path.join(import_context.import_path, video_name)
-    if not os.path.isdir(video_path):
-        print('{} is not a directory'.format(video_path))
-        return
+TAR_GZ_EXT = '.tar.gz'
 
+
+def process_video(
+    session, import_context: ImportContext, video_path: str, video_name: str,
+    import_existing_videos: bool
+):
     video_object = session.query(schema.Video).filter_by(
         name=video_name
     ).first()
     if video_object:
-        if ignore_existing_videos:
+        if not import_existing_videos:
             print('Video: {} is already in the database'.format(video_name))
             return
     else:
@@ -322,19 +335,12 @@ def process_video(
     import_commercials(session, import_context, video_path, video_object)
     session.flush()
 
-    save_embeddings(import_context, video_path, video_object, face_id_map)
+    save_embeddings(import_context, video_path, video_name, face_id_map)
     save_captions(import_context, video_path, video_name)
 
 
-def download_from_gcs(gcs_path, download_path):
-    subprocess.check_call([
-        'gsutil', '-m', 'cp', '-nr', os.path.join(gcs_path), download_path
-    ])
-    print('Downloaded data for {} videos.'.format(len(os.listdir(download_path))))
-
-
 def main(import_path, face_emb_path, caption_path, tmp_data_dir,
-         ignore_existing_videos, db_name, db_user):
+         import_existing_videos, db_name, db_user):
     password = os.getenv('POSTGRES_PASSWORD')
     session = get_db_session(db_user, password, db_name)
 
@@ -343,16 +349,24 @@ def main(import_path, face_emb_path, caption_path, tmp_data_dir,
     assert os.path.isdir(caption_path), \
         'Caption path does not exist! {}'.format(caption_path)
 
-    if import_path.startswith('gs://'):
-        download_from_gcs(import_path, tmp_data_dir)
-        print('Saved files from GCS:', tmp_data_dir)
-        import_path = tmp_data_dir
-
-    import_context = get_import_context(session, import_path, face_emb_path,
-                                        caption_path)
+    import_context = get_import_context(session, face_emb_path, caption_path)
     for video_name in tqdm(sorted(os.listdir(import_path))):
-        process_video(session, import_context, video_name,
-                      ignore_existing_videos)
+        if video_name.endswith(TAR_GZ_EXT):
+            archive_path = os.path.join(import_path, video_name)
+            os.makedirs(tmp_data_dir, exist_ok=True)
+            subprocess.check_call(['tar', '-xzf', archive_path, '-C', tmp_data_dir])
+            video_name = video_name[:-len(TAR_GZ_EXT)]
+            video_path = os.path.join(tmp_data_dir, video_name)
+            process_video(session, import_context, video_path,
+                          video_name, import_existing_videos)
+            shutil.rmtree(video_path)
+        else:
+            video_path = os.path.join(import_path, video_name)
+            if not os.path.isdir(video_path):
+                print('{} is not a directory'.format(video_path))
+                continue
+            process_video(session, import_context, video_path, video_name,
+                          import_existing_videos)
     session.commit()
     print('Done!')
 
