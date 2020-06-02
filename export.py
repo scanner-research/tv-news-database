@@ -14,7 +14,7 @@ This script opens a very large number of file descriptors (40k or so), so it may
 you to raise the system and/or per process limit. You can edit /etc/security/limits.conf
 to change the per process limit.
 
-It runs in approximately 2 hours.
+It runs in approximately 3 hours.
 """
 
 import argparse
@@ -145,7 +145,7 @@ def get_selected_identities(conn, session, min_person_screen_time=30):
         ) AND (
         	(DATE_PART('year', video.time) >= 2019 AND frame.sampler_id = {sampler_1s}) OR
             (DATE_PART('year', video.time) < 2019 AND frame.sampler_id = {sampler_3s})
-        )
+        ) AND DATE_PART('year', video.time) >= 2010
         GROUP BY identity.id, identity.name
         HAVING SUM(CASE WHEN frame.sampler_id = {sampler_3s} THEN 3 ELSE 1 END) >= {seconds}
     """.format(
