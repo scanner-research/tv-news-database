@@ -20,7 +20,8 @@ EMBEDDING_DIM = 128
 
 class ImportContext(NamedTuple):
     face_emb_path: str
-    caption_path: str
+    align_caption_path: str
+    orig_caption_path: str
 
     frame_sampler: schema.FrameSampler
 
@@ -40,8 +41,10 @@ def get_args():
                         help='Directory with pipeline outputs')
     parser.add_argument('face_emb_path', type=str,
                         help='Directory to save embeddings to')
-    parser.add_argument('caption_path', type=str,
-                        help='Directory to save captions to')
+    parser.add_argument('align_caption_path', type=str,
+                        help='Directory to save aligned captions to')
+    parser.add_argument('orig_caption_path', type=str,
+                        help='Directory to save original captions to')
     parser.add_argument('--import-existing-videos', action='store_true',
                         help='Import videos already in the database')
     parser.add_argument('--tmp-data-dir', type=str,
@@ -57,7 +60,8 @@ def load_json(fpath: str):
 
 
 def get_import_context(
-    session, face_emb_path: str, caption_path: str
+    session, face_emb_path: str, align_caption_path: str,
+    orig_caption_path: str
 ):
     frame_sampler_object = session.query(schema.FrameSampler).filter_by(
         name='1s'
@@ -89,7 +93,8 @@ def get_import_context(
 
     return ImportContext(
         face_emb_path=face_emb_path,
-        caption_path=caption_path,
+        align_caption_path=align_caption_path,
+        orig_caption_path=orig_caption_path,
         frame_sampler=frame_sampler_object,
         commercial_labeler=commercial_labeler_object,
         face_labeler=face_labeler_object,
@@ -110,6 +115,7 @@ def import_video(session, video_path: str,
 
     video_object = schema.Video(
         name=video_name,
+        extension='.mp4',
         num_frames=meta_dict['frames'],
         fps=meta_dict['fps'],
         width=meta_dict['width'],
@@ -278,10 +284,15 @@ def save_embeddings(import_context, video_path, video_name, face_id_map):
 
 
 def save_captions(import_context, video_path, video_name):
-    caption_out_path = os.path.join(
-        import_context.caption_path, '{}.srt'.format(video_name))
-    caption_path = os.path.join(video_path, 'captions.srt')
-    shutil.copyfile(caption_path, caption_out_path)
+    align_caption_out_path = os.path.join(
+        import_context.align_caption_path, '{}.srt'.format(video_name))
+    align_caption_path = os.path.join(video_path, 'captions.srt')
+    shutil.copyfile(align_caption_path, align_caption_out_path)
+
+    orig_caption_out_path = os.path.join(
+        import_context.orig_caption_path, '{}.srt'.format(video_name))
+    orig_caption_path = os.path.join(video_path, 'captions_orig.srt')
+    shutil.copyfile(orig_caption_path, orig_caption_out_path)
 
 
 @lru_cache(1024)
@@ -339,17 +350,22 @@ def process_video(
     save_captions(import_context, video_path, video_name)
 
 
-def main(import_path, face_emb_path, caption_path, tmp_data_dir,
-         import_existing_videos, db_name, db_user):
+# Note: do not make this multiprocessed, it will prevent the transactional
+# commit structure
+def main(import_path, face_emb_path, align_caption_path, orig_caption_path,
+         tmp_data_dir, import_existing_videos, db_name, db_user):
     password = os.getenv('POSTGRES_PASSWORD')
     session = get_db_session(db_user, password, db_name)
 
     assert os.path.isdir(face_emb_path), \
         'Face emb path does not exist! {}'.format(face_emb_path)
-    assert os.path.isdir(caption_path), \
-        'Caption path does not exist! {}'.format(caption_path)
+    assert os.path.isdir(align_caption_path), \
+        'Align caption path does not exist! {}'.format(align_caption_path)
+    assert os.path.isdir(orig_caption_path), \
+        'Raw caption path does not exist! {}'.format(orig_caption_path)
 
-    import_context = get_import_context(session, face_emb_path, caption_path)
+    import_context = get_import_context(
+        session, face_emb_path, align_caption_path, orig_caption_path)
     for video_name in tqdm(sorted(os.listdir(import_path))):
         if video_name.endswith(TAR_GZ_EXT):
             archive_path = os.path.join(import_path, video_name)
