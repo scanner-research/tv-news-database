@@ -31,6 +31,7 @@ class Video(Base):
     __tablename__ = 'video'
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False, index=True)
+    extension = Column(String, nullable=False)
     num_frames = Column(Integer, nullable=False)
     fps = Column(Float, nullable=False)
     width = Column(Integer, nullable=False)

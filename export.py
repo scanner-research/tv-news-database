@@ -114,6 +114,12 @@ def get_labeler(session, name):
     return session.query(schema.Labeler).filter_by(name=name).one()
 
 
+def get_backfill_labelers(session):
+    return session.query(schema.Labeler).filter(
+        schema.Labeler.name.like('face-identity-rekognition:backfill-%')
+    ).all()
+
+
 def get_frame_sampler(session, name):
     return session.query(schema.FrameSampler).filter_by(name=name).one()
 
@@ -131,6 +137,10 @@ def get_selected_identities(conn, session, min_person_screen_time=30):
     aws_identity_labeler = get_labeler(session, 'face-identity-rekognition')
     aws_prop_identity_labeler = get_labeler(
         session, 'face-identity-rekognition:augmented-l2-dist=0.7')
+    aws_backfill_identity_labelers = get_backfill_labelers(session)
+    identity_str = ','.join(str(x.id) for x in [
+        aws_identity_labeler, aws_prop_identity_labeler,
+        *(aws_backfill_identity_labelers)])
 
     cur = conn.cursor()
     cur.execute("""
@@ -141,7 +151,7 @@ def get_selected_identities(conn, session, min_person_screen_time=30):
         INNER JOIN frame ON face.frame_id = frame.id
         INNER JOIN video ON frame.video_id = video.id
         WHERE NOT video.is_corrupt AND NOT video.is_duplicate AND (
-            face_identity.labeler_id = {aws_identity} OR face_identity.labeler_id = {prop_identity} -- Only rekognition
+            face_identity.labeler_id IN ({identities}) -- Only rekognition
         ) AND (
         	(DATE_PART('year', video.time) >= 2019 AND frame.sampler_id = {sampler_1s}) OR
             (DATE_PART('year', video.time) < 2019 AND frame.sampler_id = {sampler_3s})
@@ -151,8 +161,7 @@ def get_selected_identities(conn, session, min_person_screen_time=30):
     """.format(
         sampler_3s=sampler_3s.id,
         sampler_1s=sampler_1s.id,
-        aws_identity=aws_identity_labeler.id,
-        prop_identity=aws_prop_identity_labeler.id,
+        identities=identity_str,
         seconds=60 * min_person_screen_time
     ))
     return cur.fetchall()
@@ -212,11 +221,16 @@ def get_faces_and_identities_from_db(conn, session):
     aws_identity_labeler = get_labeler(session, 'face-identity-rekognition')
     aws_prop_identity_labeler = get_labeler(
         session, 'face-identity-rekognition:augmented-l2-dist=0.7')
+    aws_backfill_identity_labelers = get_backfill_labelers(session)
     manual_gender_labeler = get_labeler(session, 'handlabeled-gender')
     knn_gender_labeler = get_labeler(session, 'knn-gender')
 
     sampler_3s = get_frame_sampler(session, '3s')
     sampler_1s = get_frame_sampler(session, '1s')
+
+    identity_str = ','.join(str(x.id) for x in [
+        aws_identity_labeler, aws_prop_identity_labeler,
+        *(aws_backfill_identity_labelers)])
 
     sql = """
     WITH identities AS (
@@ -226,11 +240,11 @@ def get_faces_and_identities_from_db(conn, session):
         INNER JOIN (
             SELECT face_id, MAX(score) AS max_score
             FROM face_identity
-            WHERE labeler_id = {aws_identity} or labeler_id = {prop_identity} -- Only rekognition
+            WHERE labeler_id IN ({identities}) -- Only rekognition
             GROUP BY face_id
         ) AS t
         ON face_identity.face_id = t.face_id AND face_identity.score = t.max_score
-        WHERE face_identity.labeler_id = {aws_identity} OR face_identity.labeler_id = {prop_identity} -- Only rekognition
+        WHERE face_identity.labeler_id IN ({identities}) -- Only rekognition
         ),
 
     -- Get the gender for each face, with manual relabeling taking precedence (5 minutes)
@@ -301,8 +315,7 @@ def get_faces_and_identities_from_db(conn, session):
                sampler_3s=sampler_3s.id,
                knn_gender=knn_gender_labeler.id,
                manual_gender=manual_gender_labeler.id,
-               aws_identity=aws_identity_labeler.id,
-               prop_identity=aws_prop_identity_labeler.id)
+               identities=identity_str)
     print(sql)
 
     print("Starting the big query")

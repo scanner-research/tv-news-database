@@ -25,6 +25,9 @@ import schema
 from util import get_or_create, parse_video_name
 
 
+VIDEO_EXT = '.mp4'
+
+
 def load_videos(session, video_csv, show_to_canonical_show_csv):
     print('Importing video, show, canonical_show')
     canonical_show_dict = {}
@@ -43,8 +46,11 @@ def load_videos(session, video_csv, show_to_canonical_show_csv):
             (
                 vid, name, num_frames, fps, width, height,
                 is_duplicate, is_corrupt
-            ) =  row
+            ) = row
             vid = int(vid)
+            assert name.endswith(VIDEO_EXT)
+            name = name[:-len(VIDEO_EXT)]
+            extension = VIDEO_EXT
             num_frames = int(num_frames)
             fps = float(fps)
             width = int(width)
@@ -74,7 +80,7 @@ def load_videos(session, video_csv, show_to_canonical_show_csv):
 
             # create the Video
             session.add(schema.Video(
-                id=vid, name=name, num_frames=num_frames,
+                id=vid, name=name, extension=extension, num_frames=num_frames,
             	fps=fps, width=width, height=height, time=timestamp,
                 show_id=show_object.id, is_duplicate=is_duplicate,
                 is_corrupt=is_corrupt))

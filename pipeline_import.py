@@ -273,14 +273,13 @@ def save_embeddings(import_context, video_path, video_name, face_id_map):
         assert len(emb) == EMBEDDING_DIM, \
             'Incorrect embedding dim: {} != {}'.format(len(emb), EMBEDDING_DIM)
 
-    id_path = os.path.join(
-        import_context.face_emb_path, '{}.ids.npy'.format(video_name))
     emb_path = os.path.join(
-        import_context.face_emb_path, '{}.data.npy'.format(video_name))
+        import_context.face_emb_path, '{}.npz'.format(video_name))
     sorted_ids = list(sorted(face_id_to_emb))
-    np.save(id_path, np.array(sorted_ids, dtype=np.int64))
-    np.save(emb_path, np.array([face_id_to_emb[i] for i in sorted_ids],
-                               dtype=np.float32))
+    np.savez_compressed(
+        emb_path, ids=np.array(sorted_ids, dtype=np.int64),
+        data=np.array([face_id_to_emb[i] for i in sorted_ids],
+                      dtype=np.float32))
 
 
 def save_captions(import_context, video_path, video_name):
