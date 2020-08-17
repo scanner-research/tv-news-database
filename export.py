@@ -235,7 +235,7 @@ def get_faces_and_identities_from_db(conn, session):
     sql = """
     WITH identities AS (
         -- Get the most confident identity for each face (10 minutes)
-        SELECT face_identity.identity_id, face_identity.score, face_identity.face_id
+        SELECT DISTINCT ON face_identity.identity_id, face_identity.score, face_identity.face_id
         FROM face_identity
         INNER JOIN (
             SELECT face_id, MAX(score) AS max_score
@@ -309,8 +309,8 @@ def get_faces_and_identities_from_db(conn, session):
     ORDER BY
         frame.video_id,
         frame.number,
-        identities.identity_id,
-        face.id
+        face.id,
+        identities.identity_id
     """.format(sampler_1s=sampler_1s.id,
                sampler_3s=sampler_3s.id,
                knn_gender=knn_gender_labeler.id,
@@ -411,12 +411,15 @@ def export_faces_and_identities(conn, session, widget_data_dir):
     ) as all_faces_writer:
         face_iterator = get_faces_and_identities_from_db(conn, session)
 
+        prev_face_id = None
         for row in tqdm.tqdm(face_iterator, total=face_count):
             (
                 face_id, video_id, frame_sampler_id, start_ms,
                 gender_id, gender_score, identity_id, identity_score, is_host,
                 bbox_x1, bbox_x2, bbox_y1, bbox_y2
             ) = row
+            assert prev_face_id != face_id, 'Duplicate face id! {}'.format(face_id)
+            prev_face_id = face_id
 
             if video_id != curr_video_id:
                 if curr_video_id is not None:
