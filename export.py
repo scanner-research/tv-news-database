@@ -235,7 +235,7 @@ def get_faces_and_identities_from_db(conn, session):
     sql = """
     WITH identities AS (
         -- Get the most confident identity for each face (10 minutes)
-        SELECT DISTINCT ON face_identity.identity_id, face_identity.score, face_identity.face_id
+        SELECT DISTINCT ON (face_identity.face_id) face_identity.identity_id, face_identity.score, face_identity.face_id
         FROM face_identity
         INNER JOIN (
             SELECT face_id, MAX(score) AS max_score
